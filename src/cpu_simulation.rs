@@ -1,4 +1,4 @@
-use crate::particle;
+use crate::particle::Particle;
 
 pub struct CpuSimulation {
     particles: Vec<crate::Particle>,
@@ -6,16 +6,29 @@ pub struct CpuSimulation {
     r_list: f32,
     cell_list: Box<[Vec<usize>]>,
     list_size: usize,
+    delta_time: f32,
+    steps_between_paint: usize,
 }
 
 impl crate::MdSimulation for CpuSimulation {
     fn simulation_step(&mut self) -> Vec<[f32; 3]> {
-        vec![[0 as f32, 0 as f32, 0 as f32]]
+        for _ in 0..self.steps_between_paint {
+            self.position_calculation();
+            if self.check_verlet() {
+                self.create_verlet_list();
+            }
+            self.force_acc_velocity_calculation();
+            for particle in &mut self.particles {
+                std::mem::swap(&mut particle.curr, &mut particle.prev);
+            }
+        }
+
+        self.particles.iter().map(|p| p.curr.position).collect()
     }
 }
 
 impl CpuSimulation {
-    fn new(env_size: f32) -> Self {
+    fn new(env_size: f32, delta_time: f32, steps_between_paint: usize) -> Self {
         //TODO Make particles
         //TODO Get env_size and r_list from constructor
         //TODO initialize cell_list
@@ -38,37 +51,68 @@ impl CpuSimulation {
             r_list: 0.0,
             cell_list: cells.into_boxed_slice(),
             list_size: width,
+            delta_time,
+            steps_between_paint,
         }
+    }
+
+    fn check_verlet(&self) -> bool {
+        let mut out = false;
+        for p in &self.particles {
+            if p.moved_too_much(self.r_list, self.env_size) {
+                out = true;
+                break;
+            }
+        }
+
+        out
     }
 
     fn get_cell_id(&self, x: usize, y: usize, z: usize) -> usize {
         x + self.list_size * y + self.list_size * self.list_size * z
     }
 
-    fn position_calculation(&mut self, delta_time: f32) {
+    fn position_calculation(&mut self) {
+        let delta_time = self.delta_time;
         for particle in &mut self.particles {
             for i in 0..3 {
                 particle.curr.position[i] = particle.prev.position[i]
                     + particle.prev.velocity[i] * delta_time
                     + particle.prev.acceleration[i] * delta_time * delta_time / 2.0;
+                if particle.curr.position[i] > self.env_size + particle.sigma {
+                    particle.curr.position[i] = -particle.sigma;
+                } else if particle.curr.position[i] < -particle.sigma {
+                    particle.curr.position[i] = self.env_size + particle.sigma;
+                }
             }
         }
     }
 
     fn force_acc_velocity_calculation(&mut self) {
-        let length = self.particles.len() / 2;
-
-        for i in 0..length {}
+        for j in 0..self.particles.len() {
+            let mut force = [0.0; 3];
+            for i in 0..self.particles[j].verlet.particles.len() {
+                let particle = &self.particles[j];
+                let p = particle.verlet.particles[i];
+                let clone = self.particles[p].clone();
+                let f = particle.force(
+                    &clone,
+                    particle.distance_squared(&clone, self.env_size).sqrt(),
+                    self.env_size,
+                );
+                for l in 0..3 {
+                    force[l] += f[l];
+                }
+            }
+            self.particles[j].add_force(force);
+            self.particles[j].acceleration();
+            self.particles[j].velocity(self.delta_time);
+        }
     }
 
     fn create_cell_list(&mut self) {
-        for x in 0..self.list_size {
-            for y in 0..self.list_size {
-                for z in 0..self.list_size {
-                    self.cell_list[x + y * self.list_size + z * self.list_size * self.list_size]
-                        .clear();
-                }
-            }
+        for i in 0..self.cell_list.len() {
+            self.cell_list[i].clear();
         }
 
         for i in 0..self.particles.len() {
@@ -83,7 +127,7 @@ impl CpuSimulation {
         }
     }
 
-    fn create_list(&mut self) {
+    fn create_verlet_list(&mut self) {
         self.create_cell_list();
 
         for x in 0..self.list_size {
@@ -107,7 +151,8 @@ impl CpuSimulation {
                             if a == b {
                                 continue;
                             }
-                            if self.particles[a].distance_squared(&self.particles[b], self.env_size)
+                            if self.particles[a]
+                                .distance_squared(&self.particles[b].clone(), self.env_size)
                                 < (self.r_list * self.r_list)
                             {
                                 self.particles[a].verlet.particles.push(b);
