@@ -35,7 +35,7 @@ impl CpuSimulation {
         self.r_cut + self.skin
     }
 
-    fn new(
+    pub fn new(
         delta_time: f32,
         steps_between_paint: usize,
         state: crate::SimulationState,
