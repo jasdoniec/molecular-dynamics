@@ -85,7 +85,24 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
         println!("  R                reset camera");
         println!("  Esc              quit");
 
-        let event_loop = EventLoop::new().expect("failed to create event loop");
+        let event_loop = match EventLoop::new() {
+            Ok(event_loop) => event_loop,
+            Err(e) => {
+                eprintln!("failed to connect to a display server: {e}");
+                eprintln!();
+                eprintln!("your shell has no display attached — this happens over SSH or in");
+                eprintln!("tmux/screen started from SSH, which don't inherit the desktop");
+                eprintln!("session's environment. Either run from a terminal opened inside");
+                eprintln!("the desktop session, or point the shell at the display server:");
+                eprintln!();
+                eprintln!("  ls $XDG_RUNTIME_DIR | grep wayland    # find the socket name");
+                eprintln!("  export WAYLAND_DISPLAY=<socket>        # e.g. wayland-1");
+                eprintln!("  # on X11 instead: export DISPLAY=:0");
+                eprintln!();
+                eprintln!("the window will then open on that machine's screen.");
+                std::process::exit(1);
+            }
+        };
         if let Err(e) = event_loop.run_app(&mut self) {
             eprintln!("event loop exited with an error: {e}");
         }
