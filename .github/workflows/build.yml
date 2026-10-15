@@ -1,0 +1,93 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Only one build at a time on main: newer pushes cancel older runs, which
+# also prevents two runs from racing to replace the rolling "latest" release.
+concurrency:
+  group: build-main
+  cancel-in-progress: true
+
+# Required to create the release tag and release
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build and test (${{ matrix.os-name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            os-name: linux-x86_64
+            target: x86_64-unknown-linux-gnu
+          - os: windows-latest
+            os-name: windows-x86_64
+            target: x86_64-pc-windows-msvc
+          - os: macos-latest
+            os-name: macos-arm64
+            target: aarch64-apple-darwin
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked --target ${{ matrix.target }}
+
+      - name: Package binary (Linux / macOS)
+        if: runner.os != 'Windows'
+        run: tar -czf "molecular-dynamics-${{ matrix.os-name }}.tar.gz" -C "target/${{ matrix.target }}/release" molecular-dynamics
+
+      - name: Package binary (Windows)
+        if: runner.os == 'Windows'
+        run: Compress-Archive -Path "target/${{ matrix.target }}/release/molecular-dynamics.exe" -DestinationPath "molecular-dynamics-${{ matrix.os-name }}.zip" -Force
+
+      - name: Upload package as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: molecular-dynamics-${{ matrix.os-name }}
+          path: molecular-dynamics-${{ matrix.os-name }}.*
+          if-no-files-found: error
+
+  release:
+    name: Publish rolling "latest" release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all platform packages
+        uses: actions/download-artifact@v4
+        with:
+          pattern: molecular-dynamics-*
+          merge-multiple: true
+          path: dist
+
+      - name: Replace previous "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          SHORT_SHA="${SHA:0:7}"
+          # Ignore failure when no previous release exists yet
+          gh release delete latest --repo "$REPO" --yes --cleanup-tag || true
+          gh release create latest dist/* \
+            --repo "$REPO" \
+            --target "$SHA" \
+            --latest \
+            --title "Latest build ($SHORT_SHA)" \
+            --notes "Automated build from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz)."
