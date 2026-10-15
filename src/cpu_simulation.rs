@@ -1,9 +1,12 @@
-use crate::particle::Particle;
+use crate::particle;
+use rand::Rng;
+use rand_distr::{Distribution, Normal};
 
 pub struct CpuSimulation {
     particles: Vec<crate::Particle>,
     env_size: f32,
-    r_list: f32,
+    r_cut: f32,
+    skin: f32,
     cell_list: Box<[Vec<usize>]>,
     list_size: usize,
     delta_time: f32,
@@ -28,14 +31,126 @@ impl crate::MdSimulation for CpuSimulation {
 }
 
 impl CpuSimulation {
-    fn new(env_size: f32, delta_time: f32, steps_between_paint: usize) -> Self {
-        //TODO Make particles
-        //TODO Get env_size and r_list from constructor
-        //TODO initialize cell_list
+    fn r_list(&self) -> f32 {
+        self.r_cut + self.skin
+    }
 
-        let r_list = 0.0;
+    fn new(
+        delta_time: f32,
+        steps_between_paint: usize,
+        state: crate::SimulationState,
+    ) -> Result<Self, String> {
+        let mut state = state;
 
-        let width = (env_size / r_list) as usize;
+        let env_size = state.env_size;
+
+        let mut particle_num = 0;
+
+        for i in 0..state.particles.len() {
+            particle_num += state.particles[i].0;
+        }
+
+        let particles_width = ((particle_num as f32).powf(1.0 / 3.0).ceil()) as usize;
+
+        let spacing = env_size / (particles_width as f32);
+
+        let mut biggest_sigma = state.particles[0].1.sigma;
+        for particle in &state.particles {
+            if particle.1.sigma > biggest_sigma {
+                biggest_sigma = particle.1.sigma;
+            }
+        }
+
+        if biggest_sigma > spacing {
+            return Err(
+                "env too small/particles too big, can't create particle without overlap"
+                    .to_string(),
+            );
+        }
+
+        let mut particles: Vec<particle::Particle> = Vec::new();
+
+        let mut rng = rand::rng();
+
+        for i in 0..particles_width {
+            for j in 0..particles_width {
+                for k in 0..particles_width {
+                    let y = rng.random_range(0..state.particles.len());
+                    let mut pos = [0.0; 3];
+                    pos[0] = spacing * (i as f32) + spacing / 2.0;
+                    pos[1] = spacing * (j as f32) + spacing / 2.0;
+                    pos[2] = spacing * (k as f32) + spacing / 2.0;
+                    let std_dev = (state.temperature / state.particles[y].1.mass).sqrt();
+                    let normal = Normal::new(0.0, std_dev).unwrap();
+                    let velocity = [
+                        normal.sample(&mut rng),
+                        normal.sample(&mut rng),
+                        normal.sample(&mut rng),
+                    ];
+                    particles.push(crate::Particle::new(&state.particles[y].1, pos, velocity));
+                    state.particles[y].0 -= 1;
+                    if state.particles[y].0 == 0 {
+                        state.particles.remove(y);
+                    }
+                    if state.particles.is_empty() {
+                        break;
+                    }
+                }
+                if state.particles.is_empty() {
+                    break;
+                }
+            }
+            if state.particles.is_empty() {
+                break;
+            }
+        }
+
+        // Remove center-of-mass drift (mass-weighted)
+        let mut v_com = [0.0f32; 3];
+        let mut m_total = 0.0f32;
+        for p in &particles {
+            for i in 0..3 {
+                v_com[i] += p.mass * p.prev.velocity[i];
+            }
+            m_total += p.mass;
+        }
+        if m_total > 0.0 {
+            for i in 0..3 {
+                v_com[i] /= m_total;
+            }
+        }
+
+        // Rescale to the exact target temperature (after drift removal)
+        let ke: f32 = particles
+            .iter()
+            .map(|p| {
+                let v = [
+                    p.prev.velocity[0] - v_com[0],
+                    p.prev.velocity[1] - v_com[1],
+                    p.prev.velocity[2] - v_com[2],
+                ];
+                p.mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            })
+            .sum();
+        let t_actual = ke / (3.0 * particles.len() as f32);
+
+        if t_actual > 0.0 {
+            let scale = (state.temperature / t_actual).sqrt();
+            for p in &mut particles {
+                for i in 0..3 {
+                    p.prev.velocity[i] = (p.prev.velocity[i] - v_com[i]) * scale;
+                }
+            }
+        }
+
+        let r_cut = biggest_sigma * 2.7;
+        let skin = biggest_sigma * 0.3;
+
+        let width = (env_size / (r_cut + skin)) as usize;
+
+        if width < 3 {
+            return Err("Env to small/particles too big, possible self referencing".to_string());
+        }
 
         let cell_num = width * width * width;
 
@@ -45,21 +160,26 @@ impl CpuSimulation {
             cells.push(Vec::new())
         }
 
-        Self {
-            particles: Vec::new(),
+        let mut simulation = Self {
+            particles,
             env_size,
-            r_list: 0.0,
+            r_cut,
+            skin,
             cell_list: cells.into_boxed_slice(),
             list_size: width,
             delta_time,
             steps_between_paint,
-        }
+        };
+
+        simulation.create_verlet_list();
+
+        Ok(simulation)
     }
 
     fn check_verlet(&self) -> bool {
         let mut out = false;
         for p in &self.particles {
-            if p.moved_too_much(self.r_list, self.env_size) {
+            if p.moved_too_much(self.skin, self.env_size) {
                 out = true;
                 break;
             }
@@ -121,7 +241,7 @@ impl CpuSimulation {
             self.particles[i].verlet.org_pos = p;
             let c = |v: f32| -> usize {
                 let v = v.rem_euclid(self.env_size);
-                ((v / self.r_list) as usize).min(self.list_size - 1)
+                ((v / self.r_list()) as usize).min(self.list_size - 1)
             };
             self.cell_list[self.get_cell_id(c(p[0]), c(p[1]), c(p[2]))].push(i);
         }
@@ -153,7 +273,7 @@ impl CpuSimulation {
                             }
                             if self.particles[a]
                                 .distance_squared(&self.particles[b].clone(), self.env_size)
-                                < (self.r_list * self.r_list)
+                                < (self.r_list() * self.r_list())
                             {
                                 self.particles[a].verlet.particles.push(b);
                             }

@@ -26,7 +26,40 @@ pub struct ParticleClone {
     pub mass: f32,
 }
 
+impl ParticleState {
+    pub fn new() -> Self {
+        Self {
+            position: [0.0; 3],
+            velocity: [0.0; 3],
+            acceleration: [0.0; 3],
+            force: [0.0; 3],
+        }
+    }
+}
+
 impl Particle {
+    pub fn new(
+        particle: &crate::simulation_state::ParticleInit,
+        position: [f32; 3],
+        velocity: [f32; 3],
+    ) -> Self {
+        let mut prev = ParticleState::new();
+        let curr = ParticleState::new();
+        prev.position = position.clone();
+        prev.velocity = velocity;
+        Self {
+            curr,
+            prev,
+            verlet: VerletList {
+                particles: Vec::new(),
+                org_pos: position.clone(),
+            },
+            epsilon: particle.epsilon,
+            sigma: particle.sigma,
+            mass: particle.mass,
+        }
+    }
+
     pub fn clone(&self) -> ParticleClone {
         ParticleClone {
             position: self.curr.position.clone(),
@@ -58,6 +91,11 @@ impl Particle {
     }
 
     pub fn force(&self, other: &ParticleClone, distance: f32, box_length: f32) -> [f32; 3] {
+        // Guard against exact overlap (distance ≈ 0) which would cause NaN
+        if distance < 1e-6 {
+            return [0.0; 3];
+        }
+
         let sigma = (self.sigma + other.sigma) / 2.0;
         let epsilon = (self.epsilon * other.epsilon).sqrt();
 

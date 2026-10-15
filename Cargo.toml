@@ -6,3 +6,5 @@ edition = "2024"
 [dependencies]
 wgpu = {version = "30.0.1", features = ["webgl"]}
 pollster = "0.4"
+rand = "0.9"
+rand_distr = "0.5"
