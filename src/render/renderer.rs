@@ -1,12 +1,13 @@
 //! wgpu renderer: draws the particle instances as shaded billboard spheres
 //! plus a wireframe of the periodic box, with depth testing.
 //!
-//! Both pipelines share a single bind group:
-//! - `@group(0) @binding(0)`: camera uniform (updated every frame)
-//! - `@group(0) @binding(1)`: instance storage buffer (updated every frame)
-//!
-//! The box shader only uses the camera binding; a pipeline layout may
-//! declare more bindings than a shader uses.
+//! Both pipelines share a single bind group holding just the camera uniform
+//! (updated every frame). Per-particle data is fed through an *instance-rate
+//! vertex buffer* instead of a storage buffer: that is core functionality
+//! everywhere (including GLES 3.0 / WebGL2-class hardware like Ivy Bridge's
+//! HD 4000, which has no storage-buffer support), and it is at least as fast.
+//! When the simulation eventually moves to GPU compute, a single
+//! `copy_buffer_to_buffer` per frame is all that is needed to feed it.
 
 use std::sync::Arc;
 
@@ -17,7 +18,10 @@ use winit::window::Window;
 use super::camera::CameraUniform;
 use super::instances::Instance;
 
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+/// Depth24Plus is guaranteed renderable on every backend (including
+/// GLES 3.0 / WebGL2 class hardware); Metal/Vulkan map it to their native
+/// 24/32-bit depth formats automatically.
+const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.02,
     g: 0.03,
@@ -34,6 +38,22 @@ const CORNERS: [[f32; 2]; 4] = [
     [1.0, 1.0],
 ];
 
+/// Printed when no GPU adapter can be created, listing the usual fixes.
+const NO_ADAPTER_HINTS: &str = "no suitable GPU adapter was found (all enabled backends were tried: vulkan / metal / dx12 / gles).
+
+This is usually fixable by installing a driver, for example on Linux:
+
+  - software Vulkan (lavapipe) — runs on any CPU, and is plenty for this renderer:
+      Debian/Ubuntu:  sudo apt install mesa-vulkan-drivers libvulkan1
+      Fedora:          sudo dnf install mesa-vulkan-drivers vulkan-loader
+      Arch:            sudo pacman -S vulkan-swrast
+  - Mesa GLES drivers (hardware OpenGL on Intel / AMD):
+      Debian/Ubuntu:  sudo apt install libegl1 libgles2 libgl1-mesa-dri
+      Fedora:         sudo dnf install mesa-libGLES2 mesa-dri-drivers
+  - or the proprietary driver for your GPU
+
+Also make sure a display is reachable (DISPLAY or WAYLAND_DISPLAY is set).";
+
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -42,8 +62,6 @@ pub struct Renderer {
     depth_view: wgpu::TextureView,
 
     camera_buffer: wgpu::Buffer,
-
-    bind_group_layout: wgpu::BindGroupLayout,
     bind_group: wgpu::BindGroup,
     instance_buffer: wgpu::Buffer,
 
@@ -70,16 +88,37 @@ impl Renderer {
 
         let surface = instance
             .create_surface(window.clone())
-            .expect("failed to create window surface");
+            .expect(
+                "failed to create a window surface — is a display server reachable? \
+                 (DISPLAY or WAYLAND_DISPLAY must be set)",
+            );
 
-        let adapter = instance
+        let adapter = match instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 ..Default::default()
             })
             .await
-            .expect("no suitable GPU adapter found");
+        {
+            Ok(adapter) => adapter,
+            Err(_) => panic!("\n{NO_ADAPTER_HINTS}"),
+        };
+
+        let adapter_info = adapter.get_info();
+        if adapter_info.device_type == wgpu::DeviceType::Cpu {
+            println!(
+                "note: no hardware GPU found; rendering with the software adapter \
+                 '{}' ({:?}). This works, but installing a real GPU driver \
+                 (e.g. mesa-vulkan-drivers) is much faster.",
+                adapter_info.name, adapter_info.backend
+            );
+        } else {
+            println!(
+                "rendering with {} ({:?}, {:?})",
+                adapter_info.name, adapter_info.backend, adapter_info.device_type
+            );
+        }
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
@@ -105,37 +144,27 @@ impl Renderer {
         let instance_buffer = create_instance_buffer(&device, 1024);
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("camera + instances layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
+            label: Some("camera layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
                 },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Storage { read_only: true },
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                },
-            ],
+                count: None,
+            }],
         });
 
-        let bind_group = create_bind_group(
-            &device,
-            &bind_group_layout,
-            &camera_buffer,
-            &instance_buffer,
-        );
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("camera bind group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
 
         let particle_shader =
             device.create_shader_module(wgpu::include_wgsl!("shaders/particle.wgsl"));
@@ -154,11 +183,21 @@ impl Renderer {
                 module: &particle_shader,
                 entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
-                buffers: &[Some(wgpu::VertexBufferLayout {
-                    array_stride: 8,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x2],
-                })],
+                buffers: &[
+                    // slot 0: billboard corners (per-vertex)
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 8,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    }),
+                    // slot 1: per-particle data (instance-rate):
+                    // location 1 = pos_radius, location 2 = color
+                    Some(wgpu::VertexBufferLayout {
+                        array_stride: 32,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![1 => Float32x4, 2 => Float32x4],
+                    }),
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &particle_shader,
@@ -239,7 +278,6 @@ impl Renderer {
             config,
             depth_view,
             camera_buffer,
-            bind_group_layout,
             bind_group,
             instance_buffer,
             particle_pipeline,
@@ -337,6 +375,7 @@ impl Renderer {
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_pipeline(&self.particle_pipeline);
             pass.set_vertex_buffer(0, self.corner_buffer.slice(..));
+            pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             pass.draw(0..4, 0..instances.len() as u32);
 
             // Box wireframe on top (depth-tested against the particles).
@@ -351,8 +390,9 @@ impl Renderer {
         self.queue.present(frame);
     }
 
-    /// Grows the instance storage buffer (and rebuilds the bind group) when
-    /// the number of instances no longer fits.
+    /// Grows the instance vertex buffer when the number of instances no
+    /// longer fits. No bind group rebuild is needed since the buffer is
+    /// bound as a vertex buffer, not through the bind group.
     fn ensure_instance_capacity(&mut self, instance_count: u64) {
         let needed = instance_count * Instance::SIZE;
         if needed <= self.instance_buffer.size() {
@@ -361,12 +401,6 @@ impl Renderer {
         let new_capacity = needed.next_power_of_two();
         self.instance_buffer =
             create_instance_buffer(&self.device, new_capacity / Instance::SIZE);
-        self.bind_group = create_bind_group(
-            &self.device,
-            &self.bind_group_layout,
-            &self.camera_buffer,
-            &self.instance_buffer,
-        );
     }
 }
 
@@ -402,30 +436,8 @@ fn create_instance_buffer(device: &wgpu::Device, capacity_instances: u64) -> wgp
     device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("instance buffer"),
         size: capacity_instances * Instance::SIZE,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
-    })
-}
-
-fn create_bind_group(
-    device: &wgpu::Device,
-    layout: &wgpu::BindGroupLayout,
-    camera_buffer: &wgpu::Buffer,
-    instance_buffer: &wgpu::Buffer,
-) -> wgpu::BindGroup {
-    device.create_bind_group(&wgpu::BindGroupDescriptor {
-        label: Some("main bind group"),
-        layout,
-        entries: &[
-            wgpu::BindGroupEntry {
-                binding: 0,
-                resource: camera_buffer.as_entire_binding(),
-            },
-            wgpu::BindGroupEntry {
-                binding: 1,
-                resource: instance_buffer.as_entire_binding(),
-            },
-        ],
     })
 }
 

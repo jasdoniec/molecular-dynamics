@@ -9,8 +9,9 @@
 
 /// One renderable particle billboard.
 ///
-/// Layout must match `struct Instance` in `shaders/particle.wgsl`:
-/// `pos_radius` (xyz = world position, w = radius) followed by an RGBA colour.
+/// Layout must match the instance-rate vertex buffer declared in
+/// `renderer.rs`: two `Float32x4` attributes (`pos_radius`, `color`) with a
+/// 32-byte stride. `pos_radius` is xyz = world position, w = radius.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Instance {
@@ -184,5 +185,13 @@ mod tests {
         let mut out = Vec::new();
         let n = build_instances(&[[0.4, 0.4, 0.4]], 0.5, 0.0, &mut out);
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn instance_layout_matches_gpu_vertex_stride() {
+        // renderer.rs declares the instance vertex buffer as two Float32x4
+        // attributes with a 32-byte stride — keep this in sync.
+        assert_eq!(std::mem::size_of::<Instance>(), 32);
+        assert_eq!(std::mem::offset_of!(Instance, color), 16);
     }
 }

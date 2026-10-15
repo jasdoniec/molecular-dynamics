@@ -1,7 +1,8 @@
 // Particle billboards: one camera-facing quad per instance, shaded like a
-// sphere. Instance data (position, radius, colour) comes from a storage buffer
-// written by the CPU each frame; in the future the same buffer can be filled
-// by a GPU compute step without changing this shader.
+// sphere. Per-particle data (position, radius, colour) arrives as an
+// instance-rate *vertex buffer* instead of a storage buffer — core
+// functionality everywhere, including GLES 3.0 / WebGL2-class hardware that
+// has no storage-buffer support.
 
 struct Camera {
     view_proj: mat4x4f,
@@ -9,13 +10,7 @@ struct Camera {
     up: vec4f,
 };
 
-struct Instance {
-    pos_radius: vec4f, // xyz = world position, w = radius
-    color: vec4f,
-};
-
 @group(0) @binding(0) var<uniform> camera: Camera;
-@group(0) @binding(1) var<storage, read> instances: array<Instance>;
 
 struct VSOut {
     @builtin(position) clip_pos: vec4f,
@@ -26,11 +21,11 @@ struct VSOut {
 @vertex
 fn vs_main(
     @location(0) corner: vec2f,
-    @builtin(instance_index) instance_idx: u32,
+    @location(1) pos_radius: vec4f, // xyz = world position, w = radius
+    @location(2) color: vec4f,
 ) -> VSOut {
-    let inst = instances[instance_idx];
-    let center = inst.pos_radius.xyz;
-    let radius = inst.pos_radius.w;
+    let center = pos_radius.xyz;
+    let radius = pos_radius.w;
 
     // Expand the quad in world space along the camera basis => billboard.
     let world = center
@@ -40,7 +35,7 @@ fn vs_main(
     var out: VSOut;
     out.clip_pos = camera.view_proj * vec4f(world, 1.0);
     out.quad_pos = corner;
-    out.color = inst.color;
+    out.color = color;
     return out;
 }
 
