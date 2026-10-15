@@ -38,15 +38,43 @@ const CORNERS: [[f32; 2]; 4] = [
     [1.0, 1.0],
 ];
 
+/// Printed when adapter selection fails: lists every adapter the system
+/// exposes and whether it can present to our window surface. `request_adapter`
+/// silently drops adapters that fail the surface check, so without this the
+/// reason for a failure would be invisible.
+async fn print_adapter_report(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) {
+    let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
+    if adapters.is_empty() {
+        println!("no GPU adapters are visible to wgpu at all");
+        return;
+    }
+    println!("adapters visible to wgpu:");
+    for adapter in &adapters {
+        let info = adapter.get_info();
+        let verdict = if adapter.is_surface_supported(surface) {
+            "can present to the window"
+        } else {
+            "CANNOT present to the window -> rejected"
+        };
+        println!(
+            "  - {} [{:?}, {:?}] — {}",
+            info.name, info.backend, info.device_type, verdict
+        );
+    }
+}
+
 /// Printed when no GPU adapter can be created, listing the usual fixes.
 const NO_ADAPTER_HINTS: &str = "no suitable GPU adapter was found (all enabled backends were tried: vulkan / metal / dx12 / gles).
 
-This is usually fixable by installing a driver, for example on Linux:
+If the adapter report above lists an adapter as CANNOT present, that is
+exactly why it was rejected. This is usually fixable by installing a
+driver, for example on Linux:
 
-  - software Vulkan (lavapipe) — runs on any CPU, and is plenty for this renderer:
-      Debian/Ubuntu:  sudo apt install mesa-vulkan-drivers libvulkan1
-      Fedora:          sudo dnf install mesa-vulkan-drivers vulkan-loader
+  - software Vulkan (lavapipe) — runs on any CPU, can always present, and is
+    plenty for this renderer (the simulation runs on the CPU anyway):
       Arch:            sudo pacman -S vulkan-swrast
+      Debian/Ubuntu:  sudo apt install mesa-vulkan-drivers libvulkan1
+      Fedora:         sudo dnf install mesa-vulkan-drivers vulkan-loader
   - Mesa GLES drivers (hardware OpenGL on Intel / AMD):
       Debian/Ubuntu:  sudo apt install libegl1 libgles2 libgl1-mesa-dri
       Fedora:         sudo dnf install mesa-libGLES2 mesa-dri-drivers
@@ -102,7 +130,10 @@ impl Renderer {
             .await
         {
             Ok(adapter) => adapter,
-            Err(_) => panic!("\n{NO_ADAPTER_HINTS}"),
+            Err(_) => {
+                print_adapter_report(&instance, &surface).await;
+                panic!("\n{NO_ADAPTER_HINTS}");
+            }
         };
 
         let adapter_info = adapter.get_info();
