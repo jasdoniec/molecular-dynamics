@@ -13,7 +13,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::MdSimulation;
+use crate::md_simulation::{MdSimulation, ParticlePaint};
 
 use super::camera::OrbitCamera;
 use super::instances::{build_instances, Instance};
@@ -22,13 +22,12 @@ use super::renderer::Renderer;
 pub struct Visualizer<E: MdSimulation> {
     engine: E,
     box_length: f32,
-    particle_radius: f32,
     steps_per_frame: usize,
     paused: bool,
 
     camera: OrbitCamera,
-    /// Positions returned by the last `simulation_step()`.
-    positions: Vec<[f32; 3]>,
+    /// Paint data returned by the last `simulation_step()`.
+    paints: Vec<ParticlePaint>,
     /// Scratch buffer for the per-frame render instances (with ghosts).
     instances: Vec<Instance>,
 
@@ -40,27 +39,23 @@ pub struct Visualizer<E: MdSimulation> {
 
 impl<E: MdSimulation + 'static> Visualizer<E> {
     pub fn new(engine: E, box_length: f32) -> Self {
-        let camera = OrbitCamera::new(Vec3::splat(box_length * 0.5), box_length * 2.2);
+        let mut camera = OrbitCamera::new(Vec3::splat(box_length * 0.5), box_length * 2.2);
+        // Near-camera fade: when zoomed in, particles right in front of the
+        // eye vanish so you can look inside the cloud.
+        camera.near_fade = [box_length * 0.07, box_length * 0.22];
         Self {
             engine,
             box_length,
-            particle_radius: (box_length * 0.025).max(0.01),
             steps_per_frame: 1,
             paused: false,
             camera,
-            positions: Vec::new(),
+            paints: Vec::new(),
             instances: Vec::new(),
             window: None,
             renderer: None,
             drag_button: None,
             last_cursor: None,
         }
-    }
-
-    /// Initial billboard radius for the particles (world units).
-    pub fn with_particle_radius(mut self, radius: f32) -> Self {
-        self.particle_radius = radius;
-        self
     }
 
     /// How many `simulation_step()` calls to run per rendered frame.
@@ -80,8 +75,9 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
         println!("  right/mid-drag   pan");
         println!("  scroll           zoom");
         println!("  space            pause / resume stepping");
+        println!("  right arrow      advance one step (pauses first)");
         println!("  [ / ]            steps per frame - / +");
-        println!("  - / =            particle radius - / +");
+        println!("  , / .            near fade - / + (front particles vanish when zoomed in)");
         println!("  R                reset camera");
         println!("  Esc              quit");
 
@@ -111,7 +107,7 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
     fn redraw(&mut self) {
         if !self.paused {
             for _ in 0..self.steps_per_frame {
-                self.positions = self.engine.simulation_step();
+                self.paints = self.engine.simulation_step();
             }
         }
 
@@ -121,8 +117,7 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
 
         let camera = self.camera.to_uniform(renderer.aspect());
         build_instances(
-            &self.positions,
-            self.particle_radius,
+            &self.paints,
             self.box_length,
             &mut self.instances,
         );
@@ -139,11 +134,16 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
             return;
         };
         let paused = if self.paused { " [paused]" } else { "" };
+        let fade = if self.camera.near_fade[0] > 0.0 {
+            format!(", near fade {:.2}", self.camera.near_fade[0])
+        } else {
+            ", near fade off".to_string()
+        };
         window.set_title(&format!(
-            "molecular-dynamics — {} particles, {} step(s)/frame, radius {:.3}{}",
-            self.positions.len(),
+            "molecular-dynamics — {} particles, {} step(s)/frame{}{}",
+            self.paints.len(),
             self.steps_per_frame,
-            self.particle_radius,
+            fade,
             paused,
         ));
     }
@@ -230,6 +230,12 @@ impl<E: MdSimulation + 'static> ApplicationHandler for Visualizer<E> {
                     PhysicalKey::Code(KeyCode::Space) => {
                         self.paused = !self.paused;
                     }
+                    PhysicalKey::Code(KeyCode::ArrowRight) => {
+                        // Step: pause if still running, then advance exactly
+                        // one simulation step and leave it on screen.
+                        self.paused = true;
+                        self.paints = self.engine.simulation_step();
+                    }
                     PhysicalKey::Code(KeyCode::Escape) => {
                         event_loop.exit();
                         update_title = false;
@@ -238,18 +244,38 @@ impl<E: MdSimulation + 'static> ApplicationHandler for Visualizer<E> {
                         self.camera =
                             OrbitCamera::new(Vec3::splat(self.box_length * 0.5), self.box_length * 2.2);
                     }
-                    PhysicalKey::Code(KeyCode::Minus) => {
-                        self.particle_radius = (self.particle_radius / 1.25).max(0.001);
-                    }
-                    PhysicalKey::Code(KeyCode::Equal) => {
-                        self.particle_radius = (self.particle_radius * 1.25)
-                            .min(self.box_length * 0.25);
-                    }
                     PhysicalKey::Code(KeyCode::BracketLeft) => {
                         self.steps_per_frame = (self.steps_per_frame - 1).max(1);
                     }
                     PhysicalKey::Code(KeyCode::BracketRight) => {
                         self.steps_per_frame = (self.steps_per_frame * 2).min(4096);
+                    }
+                    PhysicalKey::Code(KeyCode::Comma) => {
+                        // Shrink the near-fade shell; below ~2% of the box
+                        // it turns off entirely.
+                        let (start, end) = (self.camera.near_fade[0], self.camera.near_fade[1]);
+                        if start > 0.0 {
+                            let start = start * 0.8;
+                            let end = end * 0.8;
+                            self.camera.near_fade = if start < self.box_length * 0.02 {
+                                [0.0, 0.0]
+                            } else {
+                                [start, end]
+                            };
+                        }
+                    }
+                    PhysicalKey::Code(KeyCode::Period) => {
+                        if self.camera.near_fade[0] <= 0.0 {
+                            // Re-enable with the default shell.
+                            self.camera.near_fade =
+                                [self.box_length * 0.07, self.box_length * 0.22];
+                        } else {
+                            let start = (self.camera.near_fade[0] * 1.25)
+                                .min(self.box_length * 0.6);
+                            let end = (self.camera.near_fade[1] * 1.25)
+                                .min(self.box_length * 1.9);
+                            self.camera.near_fade = [start, end];
+                        }
                     }
                     _ => update_title = false,
                 }

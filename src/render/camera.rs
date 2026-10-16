@@ -10,13 +10,19 @@ use glam::{camera::rh::proj::directx, camera::rh::view, Vec3};
 /// Data uploaded to the GPU each frame.
 ///
 /// Layout must match `struct Camera` in `shaders/particle.wgsl` and
-/// `shaders/box.wgsl`: mat4x4f + vec4f + vec4f = 96 bytes.
+/// `shaders/box.wgsl`: mat4x4f + 5 x vec4f = 128 bytes.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CameraUniform {
     pub view_proj: [f32; 16],
     pub right: [f32; 4],
     pub up: [f32; 4],
+    /// xyz = world-space eye position, w unused.
+    pub eye: [f32; 4],
+    /// x = near-fade start distance (0 = disabled),
+    /// y = distance at which particles are fully visible again,
+    /// z/w unused.
+    pub near_fade: [f32; 4],
 }
 
 /// Orbit ("turntable") camera.
@@ -37,6 +43,11 @@ pub struct OrbitCamera {
     pub far: f32,
     pub min_distance: f32,
     pub max_distance: f32,
+    /// Near-camera fade shell in world units: particles closer to the eye
+    /// than `near_fade[0]` are not drawn, and they smoothly shrink to that
+    /// size between `near_fade[0]` and `near_fade[1]`. Lets you look inside
+    /// the particle cloud when zooming in. `[0.0, 0.0]` disables it.
+    pub near_fade: [f32; 2],
 }
 
 impl OrbitCamera {
@@ -51,6 +62,7 @@ impl OrbitCamera {
             far: 100_000.0,
             min_distance: distance * 0.02,
             max_distance: distance * 10.0,
+            near_fade: [0.0, 0.0],
         }
     }
 
@@ -106,10 +118,37 @@ impl OrbitCamera {
         let view = view::look_at_mat4(eye, self.target, Vec3::Y);
         let proj = directx::perspective(self.fov_y, aspect.max(0.0001), self.near, self.far);
         let (right, up) = self.basis();
+
+        // Guard the shader against a degenerate (start >= end) fade range.
+        let (start, end) = (self.near_fade[0], self.near_fade[1]);
+        let near_fade = if start > 0.0 {
+            [start, end.max(start + 0.001), 0.0, 0.0]
+        } else {
+            [0.0; 4]
+        };
+
         CameraUniform {
             view_proj: (proj * view).to_cols_array(),
             right: [right.x, right.y, right.z, 0.0],
             up: [up.x, up.y, up.z, 0.0],
+            eye: [eye.x, eye.y, eye.z, 1.0],
+            near_fade,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The WGSL `struct Camera` is mat4x4f followed by four vec4f — keep the
+    /// Rust side in sync.
+    #[test]
+    fn uniform_layout_matches_wgsl() {
+        assert_eq!(std::mem::size_of::<CameraUniform>(), 128);
+        assert_eq!(std::mem::offset_of!(CameraUniform, right), 64);
+        assert_eq!(std::mem::offset_of!(CameraUniform, up), 80);
+        assert_eq!(std::mem::offset_of!(CameraUniform, eye), 96);
+        assert_eq!(std::mem::offset_of!(CameraUniform, near_fade), 112);
     }
 }

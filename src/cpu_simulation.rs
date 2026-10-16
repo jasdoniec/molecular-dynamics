@@ -14,7 +14,7 @@ pub struct CpuSimulation {
 }
 
 impl crate::MdSimulation for CpuSimulation {
-    fn simulation_step(&mut self) -> Vec<[f32; 3]> {
+    fn simulation_step(&mut self) -> Vec<crate::md_simulation::ParticlePaint> {
         for _ in 0..self.steps_between_paint {
             self.position_calculation();
             if self.check_verlet() {
@@ -26,7 +26,17 @@ impl crate::MdSimulation for CpuSimulation {
             }
         }
 
-        self.particles.iter().map(|p| p.curr.position).collect()
+        // After the swap at the end of each physics step the newest state
+        // lives in `prev` (returning `curr` would paint one step behind).
+        // The radius is derived from sigma so species render at true size.
+        self.particles
+            .iter()
+            .map(|p| crate::md_simulation::ParticlePaint {
+                position: p.prev.position,
+                radius: p.sigma * 0.5,
+                color: p.color,
+            })
+            .collect()
     }
 }
 
@@ -173,6 +183,18 @@ impl CpuSimulation {
 
         simulation.create_verlet_list();
 
+        // Velocity Verlet needs the accelerations at t = 0 (the first
+        // position update already uses them). The freshly placed state lives
+        // in `prev` while the force code reads `curr`, so swap, compute the
+        // forces, and swap back.
+        for particle in &mut simulation.particles {
+            std::mem::swap(&mut particle.curr, &mut particle.prev);
+        }
+        simulation.compute_forces();
+        for particle in &mut simulation.particles {
+            std::mem::swap(&mut particle.curr, &mut particle.prev);
+        }
+
         Ok(simulation)
     }
 
@@ -199,16 +221,22 @@ impl CpuSimulation {
                 particle.curr.position[i] = particle.prev.position[i]
                     + particle.prev.velocity[i] * delta_time
                     + particle.prev.acceleration[i] * delta_time * delta_time / 2.0;
-                if particle.curr.position[i] > self.env_size + particle.sigma {
-                    particle.curr.position[i] = -particle.sigma;
-                } else if particle.curr.position[i] < -particle.sigma {
-                    particle.curr.position[i] = self.env_size + particle.sigma;
-                }
+                // Fold into [0, env_size). This MUST be a pure +/- box-length
+                // shift: the forces, cell lists and verlet lists all work in
+                // the minimum-image convention, where only multiples of the
+                // box length are no-ops. A teleport to a fixed point (like the
+                // old `> env + sigma` -> `-sigma` wrap) displaces particles by
+                // ~2 sigma in the physics frame and can land them on top of
+                // neighbours, detonating the 1/r^13 Lennard-Jones repulsion.
+                particle.curr.position[i] = particle.curr.position[i].rem_euclid(self.env_size);
             }
         }
     }
 
-    fn force_acc_velocity_calculation(&mut self) {
+    /// Sums the pairwise forces from the verlet lists into `curr.force` and
+    /// derives `curr.acceleration`. No integration happens here, so this can
+    /// also be used to seed the initial accelerations.
+    fn compute_forces(&mut self) {
         for j in 0..self.particles.len() {
             let mut force = [0.0; 3];
             for i in 0..self.particles[j].verlet.particles.len() {
@@ -226,7 +254,13 @@ impl CpuSimulation {
             }
             self.particles[j].add_force(force);
             self.particles[j].acceleration();
-            self.particles[j].velocity(self.delta_time);
+        }
+    }
+
+    fn force_acc_velocity_calculation(&mut self) {
+        self.compute_forces();
+        for particle in &mut self.particles {
+            particle.velocity(self.delta_time);
         }
     }
 
@@ -282,5 +316,101 @@ impl CpuSimulation {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::md_simulation::MdSimulation;
+    use crate::simulation_state::{ParticleInit, SimulationState};
+
+    use super::CpuSimulation;
+
+    /// Long NVE run with two species: every boundary crossing must be a pure
+    /// multiple of the box length (the minimum-image convention used by the
+    /// forces/cell/verlet lists treats any other wrap as a real ~2-sigma
+    /// displacement, which can land particles on top of neighbours and
+    /// detonate the Lennard-Jones 1/r^13 repulsion — velocities blow up).
+    /// Also checks that the paint data carries each species' true radius
+    /// (sigma/2) and its setup colour.
+    #[test]
+    fn long_run_stays_bounded() {
+        let env_size = 13.0;
+        let blue = [0.26, 0.52, 0.96, 1.0];
+        let orange = [0.98, 0.45, 0.13, 1.0];
+        let state = SimulationState {
+            particles: vec![
+                (
+                    70,
+                    ParticleInit {
+                        sigma: 1.0,
+                        epsilon: 1.0,
+                        mass: 1.0,
+                        color: blue,
+                    },
+                ),
+                (
+                    30,
+                    ParticleInit {
+                        sigma: 1.4,
+                        epsilon: 1.0,
+                        mass: 2.0,
+                        color: orange,
+                    },
+                ),
+            ],
+            temperature: 1.0,
+            env_size,
+        };
+        // 10_000 physics steps (8 per simulation_step call), ~20 time units.
+        let mut sim = CpuSimulation::new(0.002, 8, state).expect("simulation setup failed");
+
+        for step in 0..(10_000 / 8) {
+            let paints = sim.simulation_step();
+            assert_eq!(paints.len(), 100, "particle count changed");
+
+            if step == 0 {
+                // Colours and radii must match the species setup.
+                let num_blue = paints.iter().filter(|p| p.color == blue).count();
+                let num_orange = paints.iter().filter(|p| p.color == orange).count();
+                assert_eq!(num_blue, 70, "blue count wrong");
+                assert_eq!(num_orange, 30, "orange count wrong");
+                for paint in &paints {
+                    let expected = if paint.color == blue { 0.5 } else { 0.7 };
+                    assert!(
+                        (paint.radius - expected).abs() < 1e-6,
+                        "radius {} doesn't match sigma/2 = {}",
+                        paint.radius,
+                        expected
+                    );
+                }
+            }
+
+            for paint in &paints {
+                for c in paint.position {
+                    assert!(
+                        (0.0..env_size).contains(&c),
+                        "position {c} escaped the box [0, {env_size}) at call {step}"
+                    );
+                }
+            }
+        }
+
+        // After the last step the current state lives in `prev` (swapped at
+        // the end of every physics step).
+        let mut max_speed_sq = 0.0f32;
+        for particle in &sim.particles {
+            let v = particle.prev.velocity;
+            let speed_sq = v[0] * v[0] + v[1] * v[1] + v[2] * v[2];
+            assert!(speed_sq.is_finite(), "velocity went NaN/inf");
+            max_speed_sq = max_speed_sq.max(speed_sq);
+        }
+        // Equilibrated speeds are ~2-6; 30 is generous headroom that still
+        // catches the >100 explosion of a broken wrap.
+        assert!(
+            max_speed_sq < 30.0 * 30.0,
+            "velocities blew up: |v| = {}",
+            max_speed_sq.sqrt()
+        );
     }
 }

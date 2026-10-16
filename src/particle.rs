@@ -10,6 +10,9 @@ pub struct Particle {
     pub epsilon: f32,
     pub sigma: f32,
     pub mass: f32,
+    /// RGBA colour from [`crate::simulation_state::ParticleInit`],
+    /// used when painting this particle.
+    pub color: [f32; 4],
 }
 
 pub struct ParticleState {
@@ -57,6 +60,7 @@ impl Particle {
             epsilon: particle.epsilon,
             sigma: particle.sigma,
             mass: particle.mass,
+            color: particle.color,
         }
     }
 

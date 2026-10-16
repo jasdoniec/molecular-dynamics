@@ -4,6 +4,8 @@ struct Camera {
     view_proj: mat4x4f,
     right: vec4f,
     up: vec4f,
+    eye: vec4f,  // xyz = world-space eye position
+    fade: vec4f, // x = near-fade start (0 = disabled), y = fully-visible distance
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;

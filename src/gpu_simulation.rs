@@ -15,7 +15,7 @@ pub struct GpuSimulation {
 }
 
 impl crate::MdSimulation for GpuSimulation {
-    fn simulation_step(&mut self) -> Vec<[f32; 3]> {
+    fn simulation_step(&mut self) -> Vec<crate::md_simulation::ParticlePaint> {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -40,6 +40,10 @@ impl crate::MdSimulation for GpuSimulation {
             compute_pass.dispatch_workgroups((particle_count + 63) / 64, 1, 1);
         }
 
-        vec![[0 as f32, 0 as f32, 0 as f32]]
+        vec![crate::md_simulation::ParticlePaint {
+            position: [0.0, 0.0, 0.0],
+            radius: 0.5,
+            color: [1.0, 1.0, 1.0, 1.0],
+        }]
     }
 }

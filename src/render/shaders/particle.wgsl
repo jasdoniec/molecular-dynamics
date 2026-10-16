@@ -8,6 +8,8 @@ struct Camera {
     view_proj: mat4x4f,
     right: vec4f,
     up: vec4f,
+    eye: vec4f,  // xyz = world-space eye position
+    fade: vec4f, // x = near-fade start (0 = disabled), y = fully-visible distance
 };
 
 @group(0) @binding(0) var<uniform> camera: Camera;
@@ -25,7 +27,15 @@ fn vs_main(
     @location(2) color: vec4f,
 ) -> VSOut {
     let center = pos_radius.xyz;
-    let radius = pos_radius.w;
+
+    // Near-camera fade: particles inside the shell shrink smoothly to
+    // nothing (degenerate billboards rasterize no pixels), so zooming in
+    // lets you look inside the cloud. fade.x <= 0 disables it.
+    let d = distance(center, camera.eye.xyz);
+    let e0 = camera.fade.x;
+    let e1 = max(camera.fade.y, e0 + 0.001);
+    let k = select(1.0, smoothstep(e0, e1, d), e0 > 0.0);
+    let radius = pos_radius.w * k;
 
     // Expand the quad in world space along the camera basis => billboard.
     let world = center

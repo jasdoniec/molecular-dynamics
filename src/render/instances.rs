@@ -1,11 +1,16 @@
 //! CPU-side instance generation, including periodic "ghost" copies.
 //!
-//! Each frame the current particle positions are turned into render
-//! [`Instance`]s. For every particle that sits close enough to a box face that
-//! its sphere would visually cross the boundary, extra copies are emitted at
-//! `position +/- box_length` — one for every boundary the particle touches
-//! (faces, edges and corners produce up to 8 copies). The ghosts use the same
-//! colour as the original particle, so wrap-around is easy to follow.
+//! Each frame the paint data returned by
+//! [`MdSimulation::simulation_step`](crate::MdSimulation::simulation_step) is
+//! turned into render [`Instance`]s: each particle carries its own radius and
+//! its setup colour. For every particle that sits close enough to a box face
+//! that its sphere would visually cross the boundary, extra copies are
+//! emitted at `position +/- box_length` — one for every boundary the
+//! particle touches (faces, edges and corners produce up to 8 copies). The
+//! ghosts use the same radius and colour as the original particle, so
+//! wrap-around is easy to follow.
+
+use crate::md_simulation::ParticlePaint;
 
 /// One renderable particle billboard.
 ///
@@ -23,44 +28,42 @@ impl Instance {
     pub const SIZE: u64 = std::mem::size_of::<Instance>() as u64;
 }
 
-/// Turns raw simulation positions into instances, duplicating particles that
-/// are close to a periodic boundary so they show up on both sides of the box.
+/// Turns paint data into instances, duplicating particles that are close to
+/// a periodic boundary so they show up on both sides of the box.
 ///
-/// `positions` may lie slightly outside `[0, box_length)` (the CPU simulation
-/// allows an overshoot of up to one sigma before wrapping); values are folded
-/// back into the box with `rem_euclid` before ghosting.
+/// Each particle renders at its own radius (the sim provides the true,
+/// sigma-derived size).
+///
+/// Positions are kept inside `[0, box_length)` by the simulation; the
+/// `rem_euclid` fold is a guard for float edge cases and for
+/// `MdSimulation` implementations that don't fold themselves.
 ///
 /// If `box_length <= 0.0` no periodicity is assumed and each particle is
 /// drawn exactly once.
 ///
 /// Returns the number of instances written (all of them pushed to `out`).
 pub fn build_instances(
-    positions: &[[f32; 3]],
-    radius: f32,
+    particles: &[ParticlePaint],
     box_length: f32,
     out: &mut Vec<Instance>,
 ) -> usize {
     out.clear();
-    out.reserve(positions.len());
+    out.reserve(particles.len());
 
     if box_length <= 0.0 {
-        for (i, p) in positions.iter().enumerate() {
-            out.push(Instance {
-                pos_radius: [p[0], p[1], p[2], radius],
-                color: color_for_index(i),
-            });
+        for particle in particles {
+            push_instance(out, particle.position, particle.radius, particle.color);
         }
         return out.len();
     }
 
-    for (i, p) in positions.iter().enumerate() {
-        let color = color_for_index(i);
-        // Fold into [0, box_length): the simulation lets positions overshoot
-        // the box by up to one sigma before it wraps them.
+    for particle in particles {
+        let radius = particle.radius;
+        // Fold into [0, box_length).
         let q = [
-            p[0].rem_euclid(box_length),
-            p[1].rem_euclid(box_length),
-            p[2].rem_euclid(box_length),
+            particle.position[0].rem_euclid(box_length),
+            particle.position[1].rem_euclid(box_length),
+            particle.position[2].rem_euclid(box_length),
         ];
 
         for dx in -1i32..=1 {
@@ -75,21 +78,29 @@ pub fn build_instances(
                     if !axis_visible(q[2], dz, radius, box_length) {
                         continue;
                     }
-                    out.push(Instance {
-                        pos_radius: [
+                    push_instance(
+                        out,
+                        [
                             q[0] + dx as f32 * box_length,
                             q[1] + dy as f32 * box_length,
                             q[2] + dz as f32 * box_length,
-                            radius,
                         ],
-                        color,
-                    });
+                        radius,
+                        particle.color,
+                    );
                 }
             }
         }
     }
 
     out.len()
+}
+
+fn push_instance(out: &mut Vec<Instance>, position: [f32; 3], radius: f32, color: [f32; 4]) {
+    out.push(Instance {
+        pos_radius: [position[0], position[1], position[2], radius],
+        color,
+    });
 }
 
 /// Is the copy of a particle shifted by `offset * box_length` along one axis
@@ -106,75 +117,63 @@ fn axis_visible(v: f32, offset: i32, radius: f32, box_length: f32) -> bool {
     }
 }
 
-/// Stable colour per particle index (golden-angle hue walk), so the same
-/// particle keeps its colour across frames and its periodic ghosts are
-/// recognisable as copies of the same particle.
-pub fn color_for_index(i: usize) -> [f32; 4] {
-    let hue = (i as f32 * 0.618_033_99).fract();
-    hsv_to_rgb(hue, 0.62, 0.95)
-}
-
-fn hsv_to_rgb(h: f32, s: f32, v: f32) -> [f32; 4] {
-    let sector = (h * 6.0).floor();
-    let f = h * 6.0 - sector;
-    let p = v * (1.0 - s);
-    let q = v * (1.0 - f * s);
-    let t = v * (1.0 - (1.0 - f) * s);
-    let (r, g, b) = match (sector as i32) % 6 {
-        0 => (v, t, p),
-        1 => (q, v, p),
-        2 => (p, v, t),
-        3 => (p, q, v),
-        4 => (t, p, v),
-        _ => (v, p, q),
-    };
-    [r, g, b, 1.0]
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const L: f32 = 10.0;
+    const COLOR: [f32; 4] = [0.26, 0.52, 0.96, 1.0];
+
+    fn paint(position: [f32; 3]) -> ParticlePaint {
+        ParticlePaint {
+            position,
+            radius: 0.5,
+            color: COLOR,
+        }
+    }
 
     #[test]
     fn interior_particle_has_no_ghosts() {
         let mut out = Vec::new();
-        let n = build_instances(&[[5.0, 5.0, 5.0]], 0.5, L, &mut out);
+        let n = build_instances(&[paint([5.0, 5.0, 5.0])], L, &mut out);
         assert_eq!(n, 1);
         assert_eq!(out[0].pos_radius, [5.0, 5.0, 5.0, 0.5]);
+        assert_eq!(out[0].color, COLOR);
     }
 
     #[test]
     fn particle_on_face_appears_on_both_sides() {
         let mut out = Vec::new();
         // Touching the -x face: original + one ghost at +L on x.
-        let n = build_instances(&[[0.4, 5.0, 5.0]], 0.5, L, &mut out);
+        let n = build_instances(&[paint([0.4, 5.0, 5.0])], L, &mut out);
         assert_eq!(n, 2);
         assert!(out.iter().any(|i| i.pos_radius[0] == 0.4));
         assert!(out.iter().any(|i| i.pos_radius[0] == 10.4));
+        // Ghosts keep the original's colour and radius.
+        assert!(out.iter().all(|i| i.color == COLOR));
+        assert!(out.iter().all(|i| i.pos_radius[3] == 0.5));
     }
 
     #[test]
     fn particle_on_edge_gets_corner_ghosts() {
         let mut out = Vec::new();
         // Touching -x and -y faces: (0,0) stays, plus (L,0), (0,L), (L,L) on x/y.
-        let n = build_instances(&[[0.4, 0.4, 5.0]], 0.5, L, &mut out);
+        let n = build_instances(&[paint([0.4, 0.4, 5.0])], L, &mut out);
         assert_eq!(n, 4);
     }
 
     #[test]
     fn corner_particle_gets_all_eight_copies() {
         let mut out = Vec::new();
-        let n = build_instances(&[[0.4, 0.4, 0.4]], 0.5, L, &mut out);
+        let n = build_instances(&[paint([0.4, 0.4, 0.4])], L, &mut out);
         assert_eq!(n, 8);
     }
 
     #[test]
     fn overshooting_positions_are_folded_into_the_box() {
         let mut out = Vec::new();
-        // Slightly below the box (allowed by the sim's wrap threshold).
-        let n = build_instances(&[[-0.25, 5.0, 5.0]], 0.5, L, &mut out);
+        // Slightly below the box (e.g. from a sim that doesn't fold itself).
+        let n = build_instances(&[paint([-0.25, 5.0, 5.0])], L, &mut out);
         assert_eq!(n, 2);
         assert!(out.iter().any(|i| i.pos_radius[0] == 9.75));
         assert!(out.iter().any(|i| i.pos_radius[0] == -0.25));
@@ -183,7 +182,7 @@ mod tests {
     #[test]
     fn no_box_means_no_ghosts() {
         let mut out = Vec::new();
-        let n = build_instances(&[[0.4, 0.4, 0.4]], 0.5, 0.0, &mut out);
+        let n = build_instances(&[paint([0.4, 0.4, 0.4])], 0.0, &mut out);
         assert_eq!(n, 1);
     }
 
