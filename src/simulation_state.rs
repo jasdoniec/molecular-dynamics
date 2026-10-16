@@ -4,6 +4,7 @@ pub struct SimulationState {
     pub env_size: f32,
 }
 
+#[derive(Clone)]
 pub struct ParticleInit {
     pub sigma: f32,
     pub epsilon: f32,
