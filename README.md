@@ -62,9 +62,11 @@ to open a window in.
 ### Configuration
 
 The demo setup lives in [`src/main.rs`](src/main.rs): species (count,
-`sigma`, `epsilon`, `mass`, `color`), temperature, box size and timestep.
-Tweak the species list to build your own mixtures — rendered sizes and
-colors follow automatically.
+`sigma`, `epsilon` as ε/k_B in Kelvin, `mass`, `color`), temperature in
+Kelvin, box size and timestep. Tweak the species list to build your own
+mixtures — rendered sizes and colors follow automatically, and each species
+sits at its own reduced temperature T* = T / (ε/k_B) while sharing one
+physical temperature.
 
 ## Tests
 

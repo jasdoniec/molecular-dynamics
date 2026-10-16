@@ -11,6 +11,9 @@ pub struct CpuSimulation {
     list_size: usize,
     delta_time: f32,
     steps_between_paint: usize,
+    /// ε/k_B (in Kelvin) of the strongest species — the internal energy
+    /// unit. Converts the reduced internal temperature back to Kelvin.
+    epsilon_ref_kelvin: f32,
 }
 
 impl crate::MdSimulation for CpuSimulation {
@@ -38,6 +41,24 @@ impl crate::MdSimulation for CpuSimulation {
             })
             .collect()
     }
+
+    fn temperature_kelvin(&self) -> f32 {
+        let n = self.particles.len();
+        if n == 0 {
+            return 0.0;
+        }
+        // `prev` holds the current state; k_B = 1 in the internal units.
+        // sum(m v²) = 2·KE, so T* = sum / (3N).
+        let sum_m_v_squared: f32 = self
+            .particles
+            .iter()
+            .map(|p| {
+                let v = p.prev.velocity;
+                p.mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            })
+            .sum();
+        (sum_m_v_squared / (3.0 * n as f32)) * self.epsilon_ref_kelvin
+    }
 }
 
 impl CpuSimulation {
@@ -53,6 +74,26 @@ impl CpuSimulation {
         let mut state = state;
 
         let env_size = state.env_size;
+
+        // Kelvin -> reduced units. The strongest species' epsilon (ε/k_B in
+        // Kelvin) becomes the internal energy unit: every well depth is
+        // divided by it, and so is the input temperature. The internal
+        // dynamics then stay in the familiar sigma/epsilon ~ 1 regime no
+        // matter the physical scale, which keeps `delta_time` valid, while
+        // mixtures correctly give each species its own reduced temperature
+        // T* = T_kelvin / (epsilon_i / k_B).
+        let epsilon_ref_kelvin = state
+            .particles
+            .iter()
+            .map(|(_, init)| init.epsilon)
+            .fold(f32::MIN, f32::max);
+        if epsilon_ref_kelvin <= 0.0 {
+            return Err("at least one species needs a positive epsilon (in Kelvin)".to_string());
+        }
+        for (_, init) in state.particles.iter_mut() {
+            init.epsilon /= epsilon_ref_kelvin;
+        }
+        let temperature_reduced = state.temperature / epsilon_ref_kelvin;
 
         let mut particle_num = 0;
 
@@ -90,7 +131,7 @@ impl CpuSimulation {
                     pos[0] = spacing * (i as f32) + spacing / 2.0;
                     pos[1] = spacing * (j as f32) + spacing / 2.0;
                     pos[2] = spacing * (k as f32) + spacing / 2.0;
-                    let std_dev = (state.temperature / state.particles[y].1.mass).sqrt();
+                    let std_dev = (temperature_reduced / state.particles[y].1.mass).sqrt();
                     let normal = Normal::new(0.0, std_dev).unwrap();
                     let velocity = [
                         normal.sample(&mut rng),
@@ -145,7 +186,7 @@ impl CpuSimulation {
         let t_actual = ke / (3.0 * particles.len() as f32);
 
         if t_actual > 0.0 {
-            let scale = (state.temperature / t_actual).sqrt();
+            let scale = (temperature_reduced / t_actual).sqrt();
             for p in &mut particles {
                 for i in 0..3 {
                     p.prev.velocity[i] = (p.prev.velocity[i] - v_com[i]) * scale;
@@ -179,6 +220,7 @@ impl CpuSimulation {
             list_size: width,
             delta_time,
             steps_between_paint,
+            epsilon_ref_kelvin,
         };
 
         simulation.create_verlet_list();
@@ -332,7 +374,8 @@ mod tests {
     /// displacement, which can land particles on top of neighbours and
     /// detonate the Lennard-Jones 1/r^13 repulsion — velocities blow up).
     /// Also checks that the paint data carries each species' true radius
-    /// (sigma/2) and its setup colour.
+    /// (sigma/2) and its setup colour, and that the Kelvin temperature
+    /// plumbing (epsilon normalization + readout) is correct.
     #[test]
     fn long_run_stays_bounded() {
         let env_size = 13.0;
@@ -344,7 +387,7 @@ mod tests {
                     70,
                     ParticleInit {
                         sigma: 1.0,
-                        epsilon: 1.0,
+                        epsilon: 119.8, // argon-like (Kelvin)
                         mass: 1.0,
                         color: blue,
                     },
@@ -353,17 +396,25 @@ mod tests {
                     30,
                     ParticleInit {
                         sigma: 1.4,
-                        epsilon: 1.0,
+                        epsilon: 229.0, // xenon-like (Kelvin)
                         mass: 2.0,
                         color: orange,
                     },
                 ),
             ],
-            temperature: 1.0,
+            temperature: 120.0,
             env_size,
         };
         // 10_000 physics steps (8 per simulation_step call), ~20 time units.
         let mut sim = CpuSimulation::new(0.002, 8, state).expect("simulation setup failed");
+
+        // The constructor rescales the velocities to exactly the target
+        // temperature, so the initial readout must match it.
+        let measured = sim.temperature_kelvin();
+        assert!(
+            (measured - 120.0).abs() < 1.0,
+            "measured {measured} K right after setup, expected ~120 K"
+        );
 
         for step in 0..(10_000 / 8) {
             let paints = sim.simulation_step();
@@ -395,6 +446,16 @@ mod tests {
                 }
             }
         }
+
+        // The run is energy-conserving, so the measured temperature drifts
+        // as the lattice relaxes — but it must stay within sane bounds.
+        // (A missing epsilon normalization would read ~0.5 K here, a
+        // double-applied one ~27,600 K.)
+        let measured = sim.temperature_kelvin();
+        assert!(
+            (60.0..600.0).contains(&measured),
+            "measured temperature {measured} K left the plausible range"
+        );
 
         // After the last step the current state lives in `prev` (swapped at
         // the end of every physics step).

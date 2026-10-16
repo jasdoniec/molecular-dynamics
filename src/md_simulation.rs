@@ -12,4 +12,11 @@ pub struct ParticlePaint {
 
 pub trait MdSimulation {
     fn simulation_step(&mut self) -> Vec<ParticlePaint>;
+
+    /// Instantaneous kinetic temperature of the current state, in Kelvin:
+    /// `(2 / 3N) * Σ ½·m·v² * (ε_ref / k_B)` with `k_B = 1` internally.
+    ///
+    /// This is the *measured* temperature — for an energy-conserving run it
+    /// drifts away from the setup target as the system equilibrates.
+    fn temperature_kelvin(&self) -> f32;
 }

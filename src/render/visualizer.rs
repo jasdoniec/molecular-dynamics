@@ -35,6 +35,8 @@ pub struct Visualizer<E: MdSimulation> {
     renderer: Option<Renderer>,
     drag_button: Option<MouseButton>,
     last_cursor: Option<(f64, f64)>,
+    /// Last title pushed to the window — set_title only when it changes.
+    last_title: String,
 }
 
 impl<E: MdSimulation + 'static> Visualizer<E> {
@@ -55,6 +57,7 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
             renderer: None,
             drag_button: None,
             last_cursor: None,
+            last_title: String::new(),
         }
     }
 
@@ -123,29 +126,40 @@ impl<E: MdSimulation + 'static> Visualizer<E> {
         );
         renderer.render(&camera, &self.instances);
 
+        self.update_title();
+
         // Keep the render loop running.
         if let Some(window) = &self.window {
             window.request_redraw();
         }
     }
 
-    fn update_title(&self) {
+    fn update_title(&mut self) {
         let Some(window) = &self.window else {
             return;
         };
+
         let paused = if self.paused { " [paused]" } else { "" };
         let fade = if self.camera.near_fade[0] > 0.0 {
             format!(", near fade {:.2}", self.camera.near_fade[0])
         } else {
             ", near fade off".to_string()
         };
-        window.set_title(&format!(
-            "molecular-dynamics — {} particles, {} step(s)/frame{}{}",
+        // Measured kinetic temperature — drifts as the NVE run equilibrates.
+        let temperature = self.engine.temperature_kelvin();
+        let title = format!(
+            "molecular-dynamics — {} particles, {} step(s)/frame, T ≈ {:.0} K{}{}",
             self.paints.len(),
             self.steps_per_frame,
+            temperature,
             fade,
             paused,
-        ));
+        );
+        if title == self.last_title {
+            return;
+        }
+        window.set_title(&title);
+        self.last_title = title;
     }
 }
 
