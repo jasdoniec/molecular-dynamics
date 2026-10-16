@@ -62,6 +62,23 @@ fn demo() -> SimulationState {
 fn user_simulation() -> SimulationState {
     let particles: Vec<(usize, ParticleInit)> = Vec::new();
     let options = vec![
-        ("Helium", )
+        ("Helium", ParticleInit{
+            sigma: 2.55,
+        }),
+        ("Neon", ParticleInit{
+            sigma: 2.82,
+        }),
+        ("Argon", ParticleInit{
+            sigma: 3.405,
+        }),
+        ("Krypton", ParticleInit{
+            sigma: 3.66,
+        }),
+        ("Xenon", ParticleInit{
+            sigma: 4.05,
+        }),
+        ("Radon", ParticleInit{
+            sigma:
+        })
     ]
 }
