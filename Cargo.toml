@@ -11,6 +11,7 @@ rand_distr = "0.5"
 winit = "0.30"
 glam = "0.34"
 bytemuck = { version = "1", features = ["derive"] }
+font8x8 = "0.3"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }

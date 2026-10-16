@@ -17,6 +17,9 @@ A molecular dynamics simulation in Rust with a built-in real-time 3D visualizer.
   - near-camera fade: zoom in and the particles in front of you dissolve,
     so you can look inside the cloud
   - step-by-step mode for inspecting individual timesteps
+  - on-screen HUD with live readouts (particle count, steps/frame, measured
+    temperature in Kelvin) — the HUD is a plain list of text lines, so
+    adding more readouts later is trivial
 
 ## Running
 

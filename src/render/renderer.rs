@@ -16,6 +16,7 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 use super::camera::CameraUniform;
+use super::hud::{build_char_instances, CharInstance, Hud, HudLine};
 use super::instances::Instance;
 
 /// Depth24Plus is guaranteed renderable on every backend (including
@@ -99,6 +100,10 @@ pub struct Renderer {
     box_pipeline: wgpu::RenderPipeline,
     box_vertex_buffer: Option<wgpu::Buffer>,
     box_vertex_count: u32,
+
+    hud: Hud,
+    /// Scratch buffer for the per-frame HUD character instances.
+    hud_chars: Vec<CharInstance>,
 }
 
 impl Renderer {
@@ -302,6 +307,8 @@ impl Renderer {
             (None, 0)
         };
 
+        let hud = Hud::new(&device, &queue, config.format);
+
         Self {
             device,
             queue,
@@ -316,6 +323,8 @@ impl Renderer {
             box_pipeline,
             box_vertex_buffer,
             box_vertex_count,
+            hud,
+            hud_chars: Vec::new(),
         }
     }
 
@@ -337,10 +346,15 @@ impl Renderer {
         self.depth_view = create_depth_view(&self.device, width, height);
     }
 
-    /// Uploads the camera and instances, then renders one frame.
+    /// Uploads the camera, particles and HUD, then renders one frame.
     ///
     /// Handles surface loss transparently (reconfigures and skips the frame).
-    pub fn render(&mut self, camera: &CameraUniform, instances: &[Instance]) {
+    pub fn render(
+        &mut self,
+        camera: &CameraUniform,
+        instances: &[Instance],
+        hud_lines: &[HudLine],
+    ) {
         self.queue
             .write_buffer(&self.camera_buffer, 0, bytemuck::bytes_of(camera));
 
@@ -352,6 +366,14 @@ impl Renderer {
                 bytemuck::cast_slice(instances),
             );
         }
+
+        build_char_instances(
+            hud_lines,
+            (self.config.width as f32, self.config.height as f32),
+            &mut self.hud_chars,
+        );
+        self.hud
+            .prepare(&self.device, &self.queue, &self.hud_chars);
 
         let frame = match self.surface.get_current_texture() {
             wgpu::CurrentSurfaceTexture::Success(frame)
@@ -415,6 +437,9 @@ impl Renderer {
                 pass.set_vertex_buffer(0, box_vertices.slice(..));
                 pass.draw(0..self.box_vertex_count, 0..1);
             }
+
+            // HUD last: blends on top of everything, ignores depth.
+            self.hud.draw(&mut pass, self.hud_chars.len() as u32);
         }
 
         self.queue.submit(Some(encoder.finish()));
@@ -547,6 +572,11 @@ mod tests {
     #[test]
     fn box_shader_is_valid_wgsl() {
         validate(include_str!("shaders/box.wgsl"), "shaders/box.wgsl");
+    }
+
+    #[test]
+    fn hud_shader_is_valid_wgsl() {
+        validate(include_str!("shaders/hud.wgsl"), "shaders/hud.wgsl");
     }
 
     #[test]
