@@ -1,4 +1,5 @@
 use dialoguer::Confirm;
+use dialoguer::Input;
 use dialoguer::Select;
 use molecular_dynamics::cpu_simulation::CpuSimulation;
 use molecular_dynamics::md_simulation::MdSimulation;
@@ -60,25 +61,107 @@ fn demo() -> SimulationState {
 }
 
 fn user_simulation() -> SimulationState {
-    let particles: Vec<(usize, ParticleInit)> = Vec::new();
-    let options = vec![
-        ("Helium", ParticleInit{
-            sigma: 2.55,
-        }),
-        ("Neon", ParticleInit{
-            sigma: 2.82,
-        }),
-        ("Argon", ParticleInit{
-            sigma: 3.405,
-        }),
-        ("Krypton", ParticleInit{
-            sigma: 3.66,
-        }),
-        ("Xenon", ParticleInit{
-            sigma: 4.05,
-        }),
-        ("Radon", ParticleInit{
-            sigma:
-        })
-    ]
+    let mut particles: Vec<(usize, ParticleInit)> = Vec::new();
+    let mut options: Vec<(String, ParticleInit, usize)> = vec![
+        (
+            "Helium".to_string(),
+            ParticleInit {
+                sigma: 2.55,
+                epsilon: 10.2,
+                mass: 1.0,
+                color: [1.0, 0.55, 0.20, 1.0],
+            },
+            0,
+        ),
+        (
+            "Neon".to_string(),
+            ParticleInit {
+                sigma: 2.82,
+                epsilon: 35.6,
+                mass: 5.04,
+                color: [1.0, 0.27, 0.0, 1.0],
+            },
+            0,
+        ),
+        (
+            "Argon".to_string(),
+            ParticleInit {
+                sigma: 3.405,
+                epsilon: 119.8,
+                mass: 9.98,
+                color: [1.0, 0.27, 0.0, 1.0],
+            },
+            0,
+        ),
+        (
+            "Krypton".to_string(),
+            ParticleInit {
+                sigma: 3.66,
+                epsilon: 171.0,
+                mass: 20.94,
+                color: [0.75, 0.85, 1.0, 1.0],
+            },
+            0,
+        ),
+        (
+            "Xenon".to_string(),
+            ParticleInit {
+                sigma: 4.05,
+                epsilon: 221.0,
+                mass: 32.80,
+                color: [0.25, 0.50, 1.0, 1.0],
+            },
+            0,
+        ),
+    ];
+
+    let mut display: Vec<String> = options.iter().map(|(name, _, _)| name.clone()).collect();
+
+    let done = "Done".to_string();
+
+    display.push(done);
+
+    loop {
+        let selection = Select::new()
+            .with_prompt("Pick a particle to add")
+            .items(&display) // Dialoguer reads the string titles perfectly here
+            .default(0)
+            .interact()
+            .unwrap();
+
+        if selection == 5 {
+            break;
+        }
+
+        let num = Input::<usize>::new()
+            .with_prompt(format!("How many {} particles", display[selection]))
+            .default(100)
+            .interact_text()
+            .unwrap();
+
+        options[selection].2 = num;
+    }
+
+    for i in 0..5 {
+        if options[i].2 != 0 {
+            particles.push((options[i].2, options[i].1.clone()));
+        }
+    }
+
+    let temperature = Input::<f32>::new()
+        .with_prompt("Select temperature")
+        .default(100.0)
+        .interact_text()
+        .unwrap();
+
+    let env_size = Input::<f32>::new()
+        .with_prompt("Select the box width")
+        .interact_text()
+        .unwrap();
+
+    SimulationState {
+        particles,
+        temperature,
+        env_size,
+    }
 }
