@@ -6,3 +6,11 @@ edition = "2024"
 [dependencies]
 wgpu = {version = "30.0.1", features = ["webgl"]}
 pollster = "0.4"
+rand = "0.9"
+rand_distr = "0.5"
+winit = "0.30"
+glam = "0.34"
+bytemuck = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+naga = { version = "30", features = ["wgsl-in"] }
