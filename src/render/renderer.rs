@@ -22,7 +22,10 @@ use super::instances::Instance;
 /// Depth24Plus is guaranteed renderable on every backend (including
 /// GLES 3.0 / WebGL2 class hardware); Metal/Vulkan map it to their native
 /// 24/32-bit depth formats automatically.
-const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+///
+/// Every pipeline used in the render pass must declare this format, even
+/// the HUD which never tests or writes depth.
+pub(crate) const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 const CLEAR_COLOR: wgpu::Color = wgpu::Color {
     r: 0.02,
     g: 0.03,

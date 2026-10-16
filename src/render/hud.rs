@@ -277,8 +277,16 @@ impl Hud {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
                 ..Default::default()
             },
-            // HUD draws last and ignores depth.
-            depth_stencil: None,
+            // The render pass has a depth attachment, so wgpu requires the
+            // pipeline to declare a matching format — but the HUD never
+            // tests or writes depth; it just blends on top of everything.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: super::renderer::DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: Default::default(),
+                bias: Default::default(),
+            }),
             multisample: Default::default(),
             multiview_mask: None,
             cache: None,
