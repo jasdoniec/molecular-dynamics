@@ -18,22 +18,32 @@ A molecular dynamics simulation in Rust with a built-in real-time 3D visualizer.
     so you can look inside the cloud
   - step-by-step mode for inspecting individual timesteps
 
-Prebuilt binaries: see the [releases page](https://github.com/jasdoniec/molecular-dynamics/releases).
-
 ## Running
 
+Either grab a prebuilt binary from the
+[releases page](https://github.com/jasdoniec/molecular-dynamics/releases)
+and run it directly, or build from source:
+
 ```bash
+cargo build --release
+./target/release/molecular-dynamics      # Windows: target\release\molecular-dynamics.exe
+# or build-and-run in one step:
 cargo run --release
 ```
 
-Requirements:
+The app runs on Linux, macOS and Windows — it just needs a desktop session
+to open a window in.
 
-- A display session (X11 or Wayland). Over SSH, run from a terminal inside
-  the desktop session or set `WAYLAND_DISPLAY` (or `DISPLAY`) to point at it.
-- Any Vulkan-capable GPU, or — on machines without one — software Vulkan
-  (`lavapipe`): `sudo apt install mesa-vulkan-drivers libvulkan1`
-  (Debian/Ubuntu), `sudo dnf install mesa-vulkan-drivers` (Fedora) or
-  `sudo pacman -S vulkan-swrast` (Arch). GLES 3.0-class drivers also work.
+- **macOS** — renders with Metal; any recent Mac works, nothing extra to
+  install.
+- **Windows** — renders with DirectX 12; just run the binary.
+- **Linux** — renders with Vulkan, with an automatic GLES fallback:
+  - any Vulkan-capable GPU driver, or on machines without a GPU software
+    Vulkan (`lavapipe`): `sudo apt install mesa-vulkan-drivers libvulkan1`
+    (Debian/Ubuntu), `sudo dnf install mesa-vulkan-drivers` (Fedora) or
+    `sudo pacman -S vulkan-swrast` (Arch). GLES 3.0-class drivers also work.
+  - the window connects to Wayland or X11; over SSH, run from a terminal
+    inside the desktop session, or set `WAYLAND_DISPLAY` (or `DISPLAY`).
 
 ### Controls
 
