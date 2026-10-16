@@ -46,6 +46,25 @@ const CORNERS: [[f32; 2]; 4] = [
 /// exposes and whether it can present to our window surface. `request_adapter`
 /// silently drops adapters that fail the surface check, so without this the
 /// reason for a failure would be invisible.
+/// Requests the best adapter for the surface across all enabled backends,
+/// printing the adapter report and hints on failure.
+async fn request_adapter(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) -> wgpu::Adapter {
+    match instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(surface),
+            ..Default::default()
+        })
+        .await
+    {
+        Ok(adapter) => adapter,
+        Err(_) => {
+            print_adapter_report(instance, surface).await;
+            panic!("\n{NO_ADAPTER_HINTS}");
+        }
+    }
+}
+
 async fn print_adapter_report(instance: &wgpu::Instance, surface: &wgpu::Surface<'_>) {
     let adapters = instance.enumerate_adapters(wgpu::Backends::all()).await;
     if adapters.is_empty() {
@@ -115,7 +134,9 @@ impl Renderer {
     /// `box_length <= 0.0` disables the box wireframe and ghosting.
     pub async fn new(window: Arc<Window>, box_length: f32) -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: wgpu::Backends::all(),
+            // `WGPU_BACKEND=dx12` / `vulkan` / `gl` / `metal` restricts the
+            // instance to specific backends (driver debugging).
+            backends: wgpu::Backends::from_env().unwrap_or(wgpu::Backends::all()),
             flags: wgpu::InstanceFlags::default(),
             memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
             backend_options: wgpu::BackendOptions::default(),
@@ -129,20 +150,24 @@ impl Renderer {
                  (DISPLAY or WAYLAND_DISPLAY must be set)",
             );
 
-        let adapter = match instance
-            .request_adapter(&wgpu::RequestAdapterOptions {
-                power_preference: wgpu::PowerPreference::HighPerformance,
-                compatible_surface: Some(&surface),
-                ..Default::default()
-            })
-            .await
-        {
-            Ok(adapter) => adapter,
-            Err(_) => {
-                print_adapter_report(&instance, &surface).await;
-                panic!("\n{NO_ADAPTER_HINTS}");
+        // On Windows prefer DX12: several vendors' Vulkan drivers there
+        // (Intel iGPUs in particular) can crash the process on startup,
+        // while DX12 is the battle-tested path. Setting WGPU_BACKEND skips
+        // this preference. Everywhere else, request normally.
+        #[cfg(target_os = "windows")]
+        let adapter = {
+            let preferred = instance
+                .enumerate_adapters(wgpu::Backends::DX12)
+                .await
+                .into_iter()
+                .find(|adapter| adapter.is_surface_supported(&surface));
+            match preferred {
+                Some(adapter) => adapter,
+                None => request_adapter(&instance, &surface).await,
             }
         };
+        #[cfg(not(target_os = "windows"))]
+        let adapter = request_adapter(&instance, &surface).await;
 
         let adapter_info = adapter.get_info();
         if adapter_info.device_type == wgpu::DeviceType::Cpu {
