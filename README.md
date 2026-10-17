@@ -17,6 +17,9 @@ A molecular dynamics simulation in Rust with a built-in real-time 3D visualizer.
   - near-camera fade: zoom in and the particles in front of you dissolve,
     so you can look inside the cloud
   - step-by-step mode for inspecting individual timesteps
+  - on-screen HUD with live readouts (particle count, steps/frame, measured
+    temperature in Kelvin) — the HUD is a plain list of text lines, so
+    adding more readouts later is trivial
 
 ## Running
 
@@ -62,9 +65,11 @@ to open a window in.
 ### Configuration
 
 The demo setup lives in [`src/main.rs`](src/main.rs): species (count,
-`sigma`, `epsilon`, `mass`, `color`), temperature, box size and timestep.
-Tweak the species list to build your own mixtures — rendered sizes and
-colors follow automatically.
+`sigma`, `epsilon` as ε/k_B in Kelvin, `mass`, `color`), temperature in
+Kelvin, box size and timestep. Tweak the species list to build your own
+mixtures — rendered sizes and colors follow automatically, and each species
+sits at its own reduced temperature T* = T / (ε/k_B) while sharing one
+physical temperature.
 
 ## Tests
 
@@ -84,4 +89,22 @@ regression test that catches periodic-boundary integration bugs.
 | `src/particle.rs` | particle state and Lennard-Jones force math |
 | `src/simulation_state.rs` | setup types (`SimulationState`, `ParticleInit`) |
 | `src/md_simulation.rs` | the `MdSimulation` trait and `ParticlePaint` |
-| `src/render/` | wgpu renderer, orbit camera, visualizer and shaders |
+| `src/render/` | wgpu renderer, orbit camera, HUD, visualizer and shaders |
+
+### Troubleshooting
+
+If the app dies with a driver-level fault right after startup (e.g. a
+segfault with Intel iGPUs via Vulkan on Windows), note that DX12 is already
+the preferred backend there — the startup line tells you what was picked.
+You can force a specific backend with the `WGPU_BACKEND` environment
+variable:
+
+```bash
+WGPU_BACKEND=vulkan ./molecular-dynamics.exe    # force Vulkan on Windows
+WGPU_BACKEND=dx12 ./molecular-dynamics.exe      # force DX12
+WGPU_BACKEND=gl ./molecular-dynamics            # force GLES on Linux
+```
+
+The startup log prints which adapter and backend was picked, so you can
+tell at a glance which one you are running on. Keeping the GPU driver up
+to date also fixes a large share of startup crashes.

@@ -46,4 +46,9 @@ impl crate::MdSimulation for GpuSimulation {
             color: [1.0, 1.0, 1.0, 1.0],
         }]
     }
+
+    // TODO: measure from the actual GPU velocity buffer once implemented.
+    fn temperature_kelvin(&self) -> f32 {
+        0.0
+    }
 }
