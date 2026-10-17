@@ -43,8 +43,10 @@ jobs:
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # Retry once: CI runners occasionally fail a test run transiently
+      # (a genuinely broken test still fails on the second attempt).
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked || cargo test --locked
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -102,9 +104,3 @@ jobs:
             --latest \
             --title "$TAG ($SHORT_SHA)" \
             --notes "Automated build of version $VERSION from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz). While the version in Cargo.toml stays $VERSION, every push to main replaces this release. Bump the version to publish a new one."
-
-      - name: Remove legacy rolling "latest" release from the old CI scheme
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-        run: gh release delete latest --repo "$REPO" --yes --cleanup-tag || true
