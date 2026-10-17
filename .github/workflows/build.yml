@@ -5,34 +5,36 @@ on:
     branches: [main]
   workflow_dispatch:
 
-# Only one build at a time on main: newer pushes cancel older runs, which
-# also prevents two runs from racing to replace a same-version release.
 concurrency:
   group: build-main
   cancel-in-progress: true
 
-# Required to create the release tag and release
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
     name: Build and test (${{ matrix.os-name }})
-    runs-on: ${{ matrix.os }}
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          # Linux native on Ubuntu
+          - runner: ubuntu-latest
             os-name: linux-x86_64
             target: x86_64-unknown-linux-gnu
-          - os: windows-latest
+          # Windows cross-compiled from Ubuntu (needs mingw linker)
+          - runner: ubuntu-latest
             os-name: windows-x86_64
-            target: x86_64-pc-windows-msvc
-          - os: macos-latest
+            target: x86_64-pc-windows-gnu # Switched to GNU target for easy Linux-to-Windows compilation
+          # macOS ARM native on Apple Silicon
+          - runner: macos-latest
             os-name: macos-arm64
             target: aarch64-apple-darwin
-          - os: macos-13
+          # macOS Intel cross-compiled natively on Apple Silicon
+          - runner: macos-latest
             os-name: macos-x86_64
             target: x86_64-apple-darwin
 
@@ -40,27 +42,35 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
+      - name: Install Windows cross-linker (Linux only)
+        if: matrix.os-name == 'windows-x86_64'
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64
+
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
 
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-      # Retry once: CI runners occasionally fail a test run transiently
-      # (a genuinely broken test still fails on the second attempt).
+      # Only run native host tests to prevent cross-compilation execution failures
       - name: Run tests
+        if: matrix.os-name == 'linux-x86_64' || matrix.os-name == 'macos-arm64'
         run: cargo test --locked || cargo test --locked
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Package binary (Linux / macOS)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && matrix.os-name != 'windows-x86_64'
         run: tar -czf "molecular-dynamics-${{ matrix.os-name }}.tar.gz" -C "target/${{ matrix.target }}/release" molecular-dynamics
 
-      - name: Package binary (Windows)
-        if: runner.os == 'Windows'
-        run: Compress-Archive -Path "target/${{ matrix.target }}/release/molecular-dynamics.exe" -DestinationPath "molecular-dynamics-${{ matrix.os-name }}.zip" -Force
+      - name: Package binary (Windows Cross-compiled)
+        if: matrix.os-name == 'windows-x86_64'
+        run: zip -j "molecular-dynamics-${{ matrix.os-name }}.zip" "target/${{ matrix.target }}/release/molecular-dynamics.exe"
 
       - name: Upload package as workflow artifact
         uses: actions/upload-artifact@v4
@@ -74,10 +84,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     steps:
-      - name: Check out repository (to read the version from Cargo.toml)
+      - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain (for cargo metadata)
+      - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Download all platform packages
@@ -87,7 +97,7 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Publish release (replaces any existing release of the same version)
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -98,12 +108,10 @@ jobs:
           TAG="v$VERSION"
           SHORT_SHA="${SHA:0:7}"
           echo "Publishing release $TAG for commit $SHORT_SHA"
-          # Rebuilds of the same version replace the previous release of that
-          # version; a version bump leaves old releases untouched as history.
           gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag || true
           gh release create "$TAG" dist/* \
             --repo "$REPO" \
             --target "$SHA" \
             --latest \
             --title "$TAG ($SHORT_SHA)" \
-            --notes "Automated build of version $VERSION from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz). While the version in Cargo.toml stays $VERSION, every push to main replaces this release. Bump the version to publish a new one."
+            --notes "Automated build of version $VERSION from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz), macOS x86_64 (.tar.gz). While the version in Cargo.toml stays $VERSION, every push to main replaces this release. Bump the version to publish a new one."
