@@ -7,6 +7,7 @@ pub struct SimulationState {
     pub env_size: f32,
 }
 
+#[derive(Clone)]
 pub struct ParticleInit {
     pub sigma: f32,
     /// Well depth of this species expressed as **ε/k_B in Kelvin** (the way

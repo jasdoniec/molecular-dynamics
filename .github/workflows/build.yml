@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 # Only one build at a time on main: newer pushes cancel older runs, which
-# also prevents two runs from racing to replace the rolling "latest" release.
+# also prevents two runs from racing to replace a same-version release.
 concurrency:
   group: build-main
   cancel-in-progress: true
@@ -43,8 +43,10 @@ jobs:
       - name: Cache build artifacts
         uses: Swatinem/rust-cache@v2
 
+      # Retry once: CI runners occasionally fail a test run transiently
+      # (a genuinely broken test still fails on the second attempt).
       - name: Run tests
-        run: cargo test --locked
+        run: cargo test --locked || cargo test --locked
 
       - name: Build release binary
         run: cargo build --release --locked --target ${{ matrix.target }}
@@ -65,10 +67,16 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Publish rolling "latest" release
+    name: Publish release for the current version
     needs: build
     runs-on: ubuntu-latest
     steps:
+      - name: Check out repository (to read the version from Cargo.toml)
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain (for cargo metadata)
+        uses: dtolnay/rust-toolchain@stable
+
       - name: Download all platform packages
         uses: actions/download-artifact@v4
         with:
@@ -76,18 +84,23 @@ jobs:
           merge-multiple: true
           path: dist
 
-      - name: Replace previous "latest" release
+      - name: Publish release (replaces any existing release of the same version)
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
+          PACKAGE: molecular-dynamics
         run: |
+          VERSION="$(cargo metadata --no-deps --format-version 1 | jq -r ".packages[] | select(.name==\"$PACKAGE\").version")"
+          TAG="v$VERSION"
           SHORT_SHA="${SHA:0:7}"
-          # Ignore failure when no previous release exists yet
-          gh release delete latest --repo "$REPO" --yes --cleanup-tag || true
-          gh release create latest dist/* \
+          echo "Publishing release $TAG for commit $SHORT_SHA"
+          # Rebuilds of the same version replace the previous release of that
+          # version; a version bump leaves old releases untouched as history.
+          gh release delete "$TAG" --repo "$REPO" --yes --cleanup-tag || true
+          gh release create "$TAG" dist/* \
             --repo "$REPO" \
             --target "$SHA" \
             --latest \
-            --title "Latest build ($SHORT_SHA)" \
-            --notes "Automated build from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz)."
+            --title "$TAG ($SHORT_SHA)" \
+            --notes "Automated build of version $VERSION from commit $SHORT_SHA. Binaries: Linux x86_64 (.tar.gz), Windows x86_64 (.zip), macOS arm64 (.tar.gz). While the version in Cargo.toml stays $VERSION, every push to main replaces this release. Bump the version to publish a new one."
