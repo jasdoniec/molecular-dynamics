@@ -80,11 +80,14 @@ jobs:
           REPO: ${{ github.repository }}
           V010_SHA: 5e9dee580f5c78e361e090acb0e0e61347c2eca9
         run: |
+          set -x
           gh release delete v0.1.0 --repo "$REPO" --yes --cleanup-tag || true
-          gh api "repos/$REPO/releases" \
-            -f tag_name="v0.1.0" \
-            -f target_commitish="$V010_SHA" \
-            -f name="v0.1.0 (5e9dee5)" \
-            -f body="Pre-CLI build (renderer + simulations) at commit 5e9dee5. Backfilled automatically: the original v0.1.0 release run failed on a transient Windows test flake, so this release was never published." \
-            -F make_latest="false"
-          gh release upload v0.1.0 dist/* --repo "$REPO" --clobber
+          # Create without --latest: with the default tag ordering, the higher
+          # semver (v0.1.1) keeps the "Latest" marker on the releases page.
+          gh release create v0.1.0 dist/* \
+            --repo "$REPO" \
+            --target "$V010_SHA" \
+            --title "v0.1.0 (5e9dee5)" \
+            --notes "Pre-CLI build (renderer + simulations) at commit 5e9dee5. Backfilled automatically: the original v0.1.0 release run failed on a transient Windows test flake, so this release was never published."
+          # Deterministic safety net: explicitly keep v0.1.1 as Latest.
+          gh release edit v0.1.1 --repo "$REPO" --latest || true
