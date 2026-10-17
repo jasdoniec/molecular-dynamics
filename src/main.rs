@@ -36,9 +36,7 @@ fn demo() -> SimulationState {
     // its own reduced temperature: at 120 K the argon-like blue particles
     // are near T* = 1.0 (fluid), while the xenon-like orange ones are at
     // T* ≈ 0.52 (colder than their well depth -> they cluster).
-    let state = SimulationState {
-    // Two species so the per-particle colour and radius are visible:
-    // small blue particles and bigger, heavier orange ones.
+    // Two species so the per-particle colour and radius are visible: small blue particles and bigger, heavier orange ones.
     SimulationState {
         particles: vec![
             (

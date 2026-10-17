@@ -808,8 +808,8 @@ name = "molecular-dynamics"
 version = "0.1.2"
 dependencies = [
  "bytemuck",
- "font8x8",
  "dialoguer",
+ "font8x8",
  "glam",
  "naga",
  "pollster",
