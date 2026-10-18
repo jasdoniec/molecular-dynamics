@@ -60,6 +60,7 @@ fn demo() -> SimulationState {
         ],
         temperature: 120.0,
         env_size,
+        friction: 0.5,
     }
 }
 
@@ -166,5 +167,6 @@ fn user_simulation() -> SimulationState {
         particles,
         temperature,
         env_size,
+        friction: 0.5,
     }
 }

@@ -5,6 +5,7 @@ pub struct SimulationState {
     /// the system equilibrates).
     pub temperature: f32,
     pub env_size: f32,
+    pub friction: f32,
 }
 
 #[derive(Clone)]
