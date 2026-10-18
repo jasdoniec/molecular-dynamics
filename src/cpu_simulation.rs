@@ -14,6 +14,8 @@ pub struct CpuSimulation {
     /// ε/k_B (in Kelvin) of the strongest species — the internal energy
     /// unit. Converts the reduced internal temperature back to Kelvin.
     epsilon_ref_kelvin: f32,
+    friction: f32,
+    target_temp: f32,
 }
 
 impl crate::MdSimulation for CpuSimulation {
@@ -24,6 +26,7 @@ impl crate::MdSimulation for CpuSimulation {
                 self.create_verlet_list();
             }
             self.force_acc_velocity_calculation();
+            self.apply_thermostat();
             for particle in &mut self.particles {
                 std::mem::swap(&mut particle.curr, &mut particle.prev);
             }
@@ -221,6 +224,8 @@ impl CpuSimulation {
             delta_time,
             steps_between_paint,
             epsilon_ref_kelvin,
+            friction: state.friction,
+            target_temp: temperature_reduced,
         };
 
         simulation.create_verlet_list();
@@ -238,6 +243,43 @@ impl CpuSimulation {
         }
 
         Ok(simulation)
+    }
+
+    fn apply_thermostat(&mut self) {
+        if self.friction <= 0.0 {
+            return;
+        }
+
+        // At this point in the step (after the velocity update, before the
+        // final swap) the newest velocities live in `curr`; `prev` holds
+        // one-step-old values that are about to be overwritten. Scaling
+        // `prev` there has no effect on the dynamics — the rescale gets
+        // silently discarded next step.
+        let n = self.particles.len();
+
+        let sum_m_v_squared: f32 = self
+            .particles
+            .iter()
+            .map(|p| {
+                let v = p.curr.velocity;
+                p.mass * (v[0] * v[0] + v[1] * v[1] + v[2] * v[2])
+            })
+            .sum();
+
+        let t_actual = sum_m_v_squared / (3.0 * n as f32);
+        if t_actual <= 0.0 {
+            return;
+        }
+
+        let lambda = (1.0 + self.delta_time * self.friction * (self.target_temp / t_actual - 1.0))
+            .sqrt()
+            .clamp(0.25, 4.0);
+
+        for p in &mut self.particles {
+            for i in 0..3 {
+                p.curr.velocity[i] *= lambda;
+            }
+        }
     }
 
     fn check_verlet(&self) -> bool {
@@ -404,6 +446,7 @@ mod tests {
             ],
             temperature: 120.0,
             env_size,
+            friction: 0.0, // this test covers the energy-conserving dynamics
         };
         // 10_000 physics steps (8 per simulation_step call), ~20 time units.
         let mut sim = CpuSimulation::new(0.002, 8, state).expect("simulation setup failed");
@@ -472,6 +515,58 @@ mod tests {
             max_speed_sq < 30.0 * 30.0,
             "velocities blew up: |v| = {}",
             max_speed_sq.sqrt()
+        );
+    }
+
+    /// The Berendsen thermostat must pin the measured temperature near the
+    /// target. Without it (or when the scaling lands in the stale velocity
+    /// buffer and gets overwritten) the run behaves like NVE and drifts up
+    /// to ~170 K as the lattice relaxes. Prints the trajectory so the
+    /// failure mode is visible with `-- --nocapture`.
+    #[test]
+    fn thermostat_pins_the_temperature() {
+        let env_size = 13.0;
+        let blue = [0.26, 0.52, 0.96, 1.0];
+        let orange = [0.98, 0.45, 0.13, 1.0];
+        let state = SimulationState {
+            particles: vec![
+                (
+                    70,
+                    ParticleInit {
+                        sigma: 1.0,
+                        epsilon: 119.8, // argon-like (Kelvin)
+                        mass: 1.0,
+                        color: blue,
+                    },
+                ),
+                (
+                    30,
+                    ParticleInit {
+                        sigma: 1.4,
+                        epsilon: 229.0, // xenon-like (Kelvin)
+                        mass: 2.0,
+                        color: orange,
+                    },
+                ),
+            ],
+            temperature: 120.0,
+            env_size,
+            friction: 0.5,
+        };
+        let mut sim = CpuSimulation::new(0.002, 8, state).expect("simulation setup failed");
+
+        for call in 0..(10_000 / 8) {
+            sim.simulation_step();
+            if call % 250 == 0 {
+                println!("call {call:5}: T = {:.1} K", sim.temperature_kelvin());
+            }
+        }
+
+        let final_t = sim.temperature_kelvin();
+        println!("final T = {final_t:.1} K");
+        assert!(
+            (final_t - 120.0).abs() < 15.0,
+            "thermostat failed to pin the temperature: measured {final_t:.1} K, wanted 120 ± 15 K"
         );
     }
 }
