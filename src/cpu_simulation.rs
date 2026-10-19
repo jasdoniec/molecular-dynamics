@@ -1,5 +1,6 @@
 use crate::particle;
 use rand::Rng;
+use rand::seq::SliceRandom;
 use rand_distr::{Distribution, Normal};
 
 pub struct CpuSimulation {
@@ -126,37 +127,55 @@ impl CpuSimulation {
 
         let mut rng = rand::rng();
 
+        // Species schedule: each species index repeated by its count, then
+        // Fisher–Yates shuffled, so every species occupies a uniformly
+        // random subset of the lattice. The old per-site uniform pick used
+        // a small-count species up too fast and left it entirely on the
+        // low-x side of the box once it was exhausted.
+        let mut schedule: Vec<usize> = (0..state.particles.len())
+            .flat_map(|s| std::iter::repeat_n(s, state.particles[s].0))
+            .collect();
+        schedule.shuffle(&mut rng);
+
+        // Shuffle the site list too: particles_width³ ≥ particle_num, so
+        // shattering the unused sites across the box turns them into
+        // randomly scattered holes instead of a vacuum slab at the end.
+        let mut sites: Vec<(usize, usize, usize)> =
+            Vec::with_capacity(particles_width * particles_width * particles_width);
         for i in 0..particles_width {
             for j in 0..particles_width {
                 for k in 0..particles_width {
-                    let y = rng.random_range(0..state.particles.len());
-                    let mut pos = [0.0; 3];
-                    pos[0] = spacing * (i as f32) + spacing / 2.0;
-                    pos[1] = spacing * (j as f32) + spacing / 2.0;
-                    pos[2] = spacing * (k as f32) + spacing / 2.0;
-                    let std_dev = (temperature_reduced / state.particles[y].1.mass).sqrt();
-                    let normal = Normal::new(0.0, std_dev).unwrap();
-                    let velocity = [
-                        normal.sample(&mut rng),
-                        normal.sample(&mut rng),
-                        normal.sample(&mut rng),
-                    ];
-                    particles.push(crate::Particle::new(&state.particles[y].1, pos, velocity));
-                    state.particles[y].0 -= 1;
-                    if state.particles[y].0 == 0 {
-                        state.particles.remove(y);
-                    }
-                    if state.particles.is_empty() {
-                        break;
-                    }
-                }
-                if state.particles.is_empty() {
-                    break;
+                    sites.push((i, j, k));
                 }
             }
-            if state.particles.is_empty() {
-                break;
+        }
+        sites.shuffle(&mut rng);
+
+        // Per-axis jitter inside a lattice cell. Adjacent sites are
+        // `spacing` apart, so shifting each particle by at most
+        // (spacing - σ_max)/2 toward a neighbour keeps every pair ≥ σ_max
+        // apart: no initial overlap, so the Lennard-Jones repulsion can't
+        // detonate. The bound shrinks to 0 as spacing → σ_max, which keeps
+        // the `biggest_sigma > spacing` check above the single source of
+        // truth. (Inclusive range: jitter == 0 must sample 0, not panic on
+        // an empty 0.0..0.0 range.)
+        let jitter = (spacing - biggest_sigma) / 2.0;
+
+        for (&(i, j, k), &s) in sites.iter().zip(&schedule) {
+            let init = &state.particles[s].1;
+            let mut pos = [0.0; 3];
+            for (axis, site) in [i, j, k].into_iter().enumerate() {
+                pos[axis] =
+                    spacing * (site as f32) + spacing / 2.0 + rng.random_range(-jitter..=jitter);
             }
+            let std_dev = (temperature_reduced / init.mass).sqrt();
+            let normal = Normal::new(0.0, std_dev).unwrap();
+            let velocity = [
+                normal.sample(&mut rng),
+                normal.sample(&mut rng),
+                normal.sample(&mut rng),
+            ];
+            particles.push(crate::Particle::new(init, pos, velocity));
         }
 
         // Remove center-of-mass drift (mass-weighted)
@@ -568,5 +587,66 @@ mod tests {
             (final_t - 120.0).abs() < 15.0,
             "thermostat failed to pin the temperature: measured {final_t:.1} K, wanted 120 ± 15 K"
         );
+    }
+
+    /// The shuffled placement must spread every species uniformly over the
+    /// box. The old per-site uniform pick exhausted a small-count species
+    /// early and left it entirely in the low-x slab (the lattice fills in
+    /// x-major order). With 30 minority particles among 5³ lattice sites,
+    /// the chance of a shuffled placement putting them all in one half
+    /// along any axis is astronomically small, so a hard assert is safe.
+    #[test]
+    fn minority_species_spreads_across_the_box() {
+        let env_size = 13.0;
+        let blue = [0.26, 0.52, 0.96, 1.0];
+        let orange = [0.98, 0.45, 0.13, 1.0];
+        let state = SimulationState {
+            particles: vec![
+                (
+                    70,
+                    ParticleInit {
+                        sigma: 1.0,
+                        epsilon: 119.8, // argon-like (Kelvin)
+                        mass: 1.0,
+                        color: blue,
+                    },
+                ),
+                (
+                    30,
+                    ParticleInit {
+                        sigma: 1.4,
+                        epsilon: 229.0, // xenon-like (Kelvin)
+                        mass: 2.0,
+                        color: orange,
+                    },
+                ),
+            ],
+            temperature: 120.0,
+            env_size,
+            friction: 0.5,
+        };
+        let sim = CpuSimulation::new(0.002, 8, state).expect("simulation setup failed");
+
+        // Placement happens before any dynamics, so `prev` still holds the
+        // initial positions.
+        for axis in 0..3 {
+            let mut below = 0;
+            let mut above = 0;
+            for p in &sim.particles {
+                if p.color != orange {
+                    continue;
+                }
+                if p.prev.position[axis] < env_size / 2.0 {
+                    below += 1;
+                } else {
+                    above += 1;
+                }
+            }
+            assert!(
+                below > 0 && above > 0,
+                "minority species stuck on one side along axis {axis}: \
+                 {below} below half, {above} above"
+            );
+        }
     }
 }
