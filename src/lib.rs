@@ -2,6 +2,7 @@ pub mod cpu_simulation;
 pub mod gpu_simulation;
 pub mod md_simulation;
 pub mod particle;
+pub mod potential;
 pub mod render;
 pub mod simulation_state;
 

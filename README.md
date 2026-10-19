@@ -6,6 +6,9 @@ A molecular dynamics simulation in Rust with a built-in real-time 3D visualizer.
 
 - Lennard-Jones fluid with multiple particle species (per-species `sigma`,
   `epsilon`, `mass` and render color, with standard mixing rules)
+- physics lives in one swappable force kernel (the `Potential` enum in
+  `src/potential.rs`) — ion (Coulomb) and neural-network potentials can be
+  added as new variants without touching the engine
 - Velocity Verlet integration on top of a cell list + Verlet (neighbor) list
 - Periodic boundary conditions using the minimum-image convention
 - CPU implementation today, GPU (compute shader) implementation in progress
@@ -86,7 +89,8 @@ regression test that catches periodic-boundary integration bugs.
 |---|---|
 | `src/cpu_simulation.rs` | CPU simulation: cell lists, Verlet lists, velocity Verlet |
 | `src/gpu_simulation.rs` | GPU simulation (work in progress) |
-| `src/particle.rs` | particle state and Lennard-Jones force math |
+| `src/particle.rs` | particle state: positions/velocities, Verlet lists, minimum-image geometry |
+| `src/potential.rs` | the force kernel: the `Potential` enum (Lennard-Jones today; ion and neural-network variants later) |
 | `src/simulation_state.rs` | setup types (`SimulationState`, `ParticleInit`) |
 | `src/md_simulation.rs` | the `MdSimulation` trait and `ParticlePaint` |
 | `src/render/` | wgpu renderer, orbit camera, HUD, visualizer and shaders |

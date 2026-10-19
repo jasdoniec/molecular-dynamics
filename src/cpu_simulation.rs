@@ -1,10 +1,15 @@
 use crate::particle;
+use crate::potential::Potential;
 use rand::Rng;
 use rand::seq::SliceRandom;
 use rand_distr::{Distribution, Normal};
 
 pub struct CpuSimulation {
     particles: Vec<crate::Particle>,
+    /// The force kernel every pair is run through. The rest of the
+    /// engine (lists, integrator, thermostat) is force-agnostic: new
+    /// physics is a new `Potential` variant, not a new engine.
+    potential: Potential,
     env_size: f32,
     r_cut: f32,
     skin: f32,
@@ -40,7 +45,7 @@ impl crate::MdSimulation for CpuSimulation {
             .iter()
             .map(|p| crate::md_simulation::ParticlePaint {
                 position: p.prev.position,
-                radius: p.sigma * 0.5,
+                radius: p.params.sigma * 0.5,
                 color: p.color,
             })
             .collect()
@@ -235,6 +240,7 @@ impl CpuSimulation {
 
         let mut simulation = Self {
             particles,
+            potential: Potential::LennardJones,
             env_size,
             r_cut,
             skin,
@@ -336,9 +342,11 @@ impl CpuSimulation {
         }
     }
 
-    /// Sums the pairwise forces from the verlet lists into `curr.force` and
-    /// derives `curr.acceleration`. No integration happens here, so this can
-    /// also be used to seed the initial accelerations.
+    /// Sums the pairwise forces from the Verlet lists into `curr.force`
+    /// and derives `curr.acceleration`, asking the force kernel
+    /// ([`Potential`]) for every pair — the one place the engine meets
+    /// the physics. No integration happens here, so this can also be
+    /// used to seed the initial accelerations.
     fn compute_forces(&mut self) {
         for j in 0..self.particles.len() {
             let mut force = [0.0; 3];
@@ -346,11 +354,9 @@ impl CpuSimulation {
                 let particle = &self.particles[j];
                 let p = particle.verlet.particles[i];
                 let clone = self.particles[p].clone();
-                let f = particle.force(
-                    &clone,
-                    particle.distance_squared(&clone, self.env_size).sqrt(),
-                    self.env_size,
-                );
+                let disp = particle.displacement(&clone, self.env_size);
+                let distance = (disp[0] * disp[0] + disp[1] * disp[1] + disp[2] * disp[2]).sqrt();
+                let f = self.potential.pair_force(particle.params, clone.params, disp, distance);
                 for l in 0..3 {
                     force[l] += f[l];
                 }

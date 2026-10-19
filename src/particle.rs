@@ -1,3 +1,5 @@
+use crate::potential::ParticleParams;
+
 pub struct VerletList {
     pub particles: Vec<usize>,
     pub org_pos: [f32; 3],
@@ -7,8 +9,10 @@ pub struct Particle {
     pub curr: ParticleState,
     pub prev: ParticleState,
     pub verlet: VerletList,
-    pub epsilon: f32,
-    pub sigma: f32,
+    /// Per-species parameters the force kernel works with (ε, σ). Mass
+    /// deliberately stays a separate field: the kernel never needs it,
+    /// the integrator always does.
+    pub params: ParticleParams,
     pub mass: f32,
     /// RGBA colour from [`crate::simulation_state::ParticleInit`],
     /// used when painting this particle.
@@ -22,11 +26,11 @@ pub struct ParticleState {
     pub force: [f32; 3],
 }
 
+/// Snapshot of a neighbour's position and kernel params — the packet
+/// the pair geometry and the force kernels receive.
 pub struct ParticleClone {
     pub position: [f32; 3],
-    pub epsilon: f32,
-    pub sigma: f32,
-    pub mass: f32,
+    pub params: ParticleParams,
 }
 
 impl ParticleState {
@@ -57,8 +61,10 @@ impl Particle {
                 particles: Vec::new(),
                 org_pos: position.clone(),
             },
-            epsilon: particle.epsilon,
-            sigma: particle.sigma,
+            params: ParticleParams {
+                epsilon: particle.epsilon,
+                sigma: particle.sigma,
+            },
             mass: particle.mass,
             color: particle.color,
         }
@@ -66,22 +72,30 @@ impl Particle {
 
     pub fn clone(&self) -> ParticleClone {
         ParticleClone {
-            position: self.curr.position.clone(),
-            epsilon: self.epsilon,
-            sigma: self.sigma,
-            mass: self.mass,
+            position: self.curr.position,
+            params: self.params,
         }
     }
 
-    pub fn distance_squared(&self, other: &ParticleClone, box_length: f32) -> f32 {
-        let mut out = 0.0 as f32;
-        for i in 0..other.position.len() {
-            let mut diff = other.position[i] - self.curr.position[i];
+    /// Minimum-image displacement from `other` to `self`
+    /// (`self.curr.position − other.position`, wrapped to ±box/2 by the
+    /// periodic boundary convention). Both the Verlet-list distance
+    /// checks and the force kernels work off this one definition, so the
+    /// wrap logic lives in exactly one place.
+    pub fn displacement(&self, other: &ParticleClone, box_length: f32) -> [f32; 3] {
+        let mut disp = [0.0; 3];
+        for i in 0..disp.len() {
+            let mut diff = self.curr.position[i] - other.position[i];
             //wraps the displacement across the repeating box
             diff -= box_length * (diff / box_length).round();
-            out = out + diff * diff;
+            disp[i] = diff;
         }
-        out
+        disp
+    }
+
+    pub fn distance_squared(&self, other: &ParticleClone, box_length: f32) -> f32 {
+        let disp = self.displacement(other, box_length);
+        disp[0] * disp[0] + disp[1] * disp[1] + disp[2] * disp[2]
     }
 
     pub fn moved_too_much(&self, distance: f32, box_length: f32) -> bool {
@@ -92,34 +106,6 @@ impl Particle {
             displacement_squared += diff * diff;
         }
         distance * distance / 4.0 <= displacement_squared
-    }
-
-    pub fn force(&self, other: &ParticleClone, distance: f32, box_length: f32) -> [f32; 3] {
-        // Guard against exact overlap (distance ≈ 0) which would cause NaN
-        if distance < 1e-6 {
-            return [0.0; 3];
-        }
-
-        let sigma = (self.sigma + other.sigma) / 2.0;
-        let epsilon = (self.epsilon * other.epsilon).sqrt();
-
-        let ratio = sigma / distance;
-
-        let force = 24.0 * epsilon / distance * (2.0 * ratio.powi(12) - ratio.powi(6));
-
-        let u = |diff: f32| -> f32 {
-            let mut diff = diff;
-            diff -= box_length * (diff / box_length).round();
-            diff / distance
-        };
-
-        let mut f = [0.0; 3];
-
-        for i in 0..self.curr.force.len() {
-            f[i] = force * u(self.curr.position[i] - other.position[i]);
-        }
-
-        f
     }
 
     pub fn add_force(&mut self, force: [f32; 3]) {
