@@ -63,6 +63,19 @@ impl crate::MdSimulation for CpuSimulation {
             .sum();
         (sum_m_v_squared / (3.0 * n as f32)) * self.epsilon_ref_kelvin
     }
+
+    fn change_temp(&mut self, change: f32) {
+        self.target_temp += change / self.epsilon_ref_kelvin;
+    }
+
+    fn add_particle(&mut self, particle: crate::simulation_state::ParticleInit, count: usize) {}
+
+    fn remove_particle(&mut self, num: usize) {
+        if self.particles.len() < num {
+            return;
+        }
+        self.particles.truncate(self.particles.len() - num);
+    }
 }
 
 impl CpuSimulation {

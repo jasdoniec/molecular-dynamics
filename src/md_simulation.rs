@@ -22,7 +22,7 @@ pub trait MdSimulation {
 
     fn change_temp(&mut self, change: f32);
 
-    fn add_particle(&mut self, particle: ParticleInit);
+    fn add_particle(&mut self, particle: crate::simulation_state::ParticleInit, count: usize);
 
-    fn remove_particle(&mut self, usize: num);
+    fn remove_particle(&mut self, num: usize);
 }
