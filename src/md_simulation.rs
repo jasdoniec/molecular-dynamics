@@ -19,4 +19,10 @@ pub trait MdSimulation {
     /// This is the *measured* temperature — for an energy-conserving run it
     /// drifts away from the setup target as the system equilibrates.
     fn temperature_kelvin(&self) -> f32;
+
+    fn change_temp(&mut self, change: f32);
+
+    fn add_particle(&mut self, particle: ParticleInit);
+
+    fn remove_particle(&mut self, usize: num);
 }
