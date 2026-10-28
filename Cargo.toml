@@ -16,8 +16,3 @@ dialoguer = "0.12"
 
 [dev-dependencies]
 naga = { version = "30", features = ["wgsl-in"] }
-
-
-[package.metadata.wgsl-analyzer]
-edition = "2026_pre"
-root = "src"
